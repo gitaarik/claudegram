@@ -19,6 +19,19 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   WORKSPACE_DIR: z.string().default(process.env.HOME || '.'),
   CLAUDE_EXECUTABLE_PATH: z.string().default('claude'),
+  CLAUDE_USE_BUNDLED_EXECUTABLE: z
+    .string()
+    .default('true')
+    .transform((val) => val.toLowerCase() === 'true'),
+  CLAUDE_SDK_LOG_LEVEL: z.enum(['off', 'basic', 'verbose', 'trace']).default('verbose'),
+  CLAUDE_SDK_INCLUDE_PARTIAL: z
+    .string()
+    .default('false')
+    .transform((val) => val.toLowerCase() === 'true'),
+  CLAUDE_REASONING_SUMMARY: z
+    .string()
+    .default('true')
+    .transform((val) => val.toLowerCase() === 'true'),
   BOT_NAME: z.string().default('Claudegram'),
   BOT_MODE: z.enum(['dev', 'prod']).default('dev'),
   STREAMING_MODE: z.enum(['streaming', 'wait']).default('streaming'),
