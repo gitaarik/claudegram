@@ -57,7 +57,7 @@ function runBotCtl(args: string[]): Promise<{ stdout: string; stderr: string }> 
     execFile(
       BOTCTL_PATH,
       args,
-      { cwd: PROJECT_ROOT },
+      { cwd: PROJECT_ROOT, env: { ...process.env, MODE: config.BOT_MODE } },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error((stderr || error.message).trim()));
@@ -507,10 +507,10 @@ export async function handleBotStatus(ctx: Context): Promise<void> {
   try {
     const { stdout, stderr } = await runBotCtl(['status']);
     const output = (stdout || stderr || 'No output').trim();
-    await ctx.reply(`Bot status:\\n${output}`, { parse_mode: undefined });
+    await ctx.reply(`Bot status (${config.BOT_MODE}):\\n${output}`, { parse_mode: undefined });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    await ctx.reply(`Bot status error:\\n${errorMessage}`, { parse_mode: undefined });
+    await ctx.reply(`Bot status error (${config.BOT_MODE}):\\n${errorMessage}`, { parse_mode: undefined });
   }
 }
 
@@ -529,7 +529,7 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
     const child = spawn(
       BOTCTL_PATH,
       ['recover'],
-      { cwd: PROJECT_ROOT, detached: true, stdio: 'ignore' }
+      { cwd: PROJECT_ROOT, detached: true, stdio: 'ignore', env: { ...process.env, MODE: config.BOT_MODE } }
     );
     child.unref();
   } catch (error) {
