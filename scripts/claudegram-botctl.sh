@@ -58,6 +58,30 @@ function status() {
   return 1
 }
 
+function wait_for_stop() {
+  local timeout="${1:-10}"
+  local end=$((SECONDS + timeout))
+  while (( SECONDS < end )); do
+    if ! list_pids >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+function wait_for_start() {
+  local timeout="${1:-10}"
+  local end=$((SECONDS + timeout))
+  while (( SECONDS < end )); do
+    if list_pids >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 function stop() {
   if ! pids=$(list_pids 2>/dev/null); then
     echo "No Claudegram (${MODE}) process found."
@@ -72,6 +96,10 @@ function stop() {
     echo "Force killing remaining PIDs:"
     echo "${pids_after}" | sed 's/^/  PID: /'
     echo "${pids_after}" | xargs -r kill -KILL
+  fi
+
+  if ! wait_for_stop 10; then
+    echo "Warning: Claudegram (${MODE}) did not fully stop within timeout."
   fi
 }
 
@@ -90,7 +118,9 @@ function start() {
     nohup npm run dev > "${LOG_FILE}" 2>&1 &
   fi
 
-  sleep 1
+  if ! wait_for_start 10; then
+    echo "Warning: Claudegram (${MODE}) did not appear to start."
+  fi
   status || true
   echo "Log: ${LOG_FILE}"
 }

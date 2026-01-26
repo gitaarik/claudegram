@@ -178,80 +178,22 @@ export async function handleVoice(ctx: Context): Promise<void> {
 
     console.log(`[Voice] Transcript (${transcript.length} chars): ${transcript.substring(0, 100)}...`);
 
-    // Show full transcript if configured, chunked for Telegram's message limit
+    // Show full transcript if configured (uses smart Telegram chunking)
     if (config.VOICE_SHOW_TRANSCRIPT) {
-      const TELEGRAM_LIMIT = config.MAX_MESSAGE_LENGTH;
-      const header = '🎤 Transcript:\n\n';
-      const maxBodyPerMessage = TELEGRAM_LIMIT - header.length;
-
-      // Split transcript into chunks that fit within Telegram's limit
-      const chunks: string[] = [];
-      if (transcript.length <= maxBodyPerMessage) {
-        chunks.push(transcript);
-      } else {
-        let remaining = transcript;
-        while (remaining.length > 0) {
-          if (remaining.length <= maxBodyPerMessage) {
-            chunks.push(remaining);
-            break;
-          }
-          // Find a good split point: sentence boundary > newline > space
-          let splitAt = maxBodyPerMessage;
-          const searchRegion = remaining.substring(0, maxBodyPerMessage);
-
-          // Try sentence boundary (. ! ?) followed by space or end
-          const sentenceMatch = searchRegion.match(/.*[.!?](\s|$)/);
-          if (sentenceMatch && sentenceMatch[0].length > maxBodyPerMessage / 2) {
-            splitAt = sentenceMatch[0].length;
-          } else {
-            // Try newline
-            const lastNewline = searchRegion.lastIndexOf('\n');
-            if (lastNewline > maxBodyPerMessage / 2) {
-              splitAt = lastNewline + 1;
-            } else {
-              // Try space
-              const lastSpace = searchRegion.lastIndexOf(' ');
-              if (lastSpace > maxBodyPerMessage / 2) {
-                splitAt = lastSpace + 1;
-              }
-            }
-          }
-
-          chunks.push(remaining.substring(0, splitAt));
-          remaining = remaining.substring(splitAt);
-        }
-      }
-
-      const totalParts = chunks.length;
-
-      // First chunk: edit the "Transcribing..." ack message
-      const partLabel = totalParts > 1 ? ` [1/${totalParts}]` : '';
-      const firstMsg = `${header}${chunks[0]}${partLabel}`;
       try {
         await ctx.api.editMessageText(
           chatId,
           ackMsg.message_id,
-          firstMsg,
-          { parse_mode: undefined }
+          '🎤 Transcript received\\.',
+          { parse_mode: 'MarkdownV2' }
         );
       } catch {
-        // If edit fails, try sending as new message
         try {
           await ctx.api.deleteMessage(chatId, ackMsg.message_id);
         } catch { /* ignore */ }
-        await ctx.reply(firstMsg, { parse_mode: undefined });
       }
 
-      // Remaining chunks: send as new reply messages
-      for (let i = 1; i < chunks.length; i++) {
-        const label = ` [${i + 1}/${totalParts}]`;
-        await ctx.reply(
-          `${header}${chunks[i]}${label}`,
-          { parse_mode: undefined }
-        );
-        // Small delay to avoid rate limiting
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      await messageSender.sendMessage(ctx, `🎤 Transcript:\n\n${transcript}`);
     } else {
       // Remove ack message
       try {
