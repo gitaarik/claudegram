@@ -117,6 +117,11 @@ const envSchema = z.object({
     .string()
     .default('60000')
     .transform((val) => parseInt(val, 10)),
+  // Transcribe command: send .txt file if transcript exceeds this many chars
+  TRANSCRIBE_FILE_THRESHOLD_CHARS: z
+    .string()
+    .default('4000')
+    .transform((val) => parseInt(val, 10)),
 });
 
 const parsed = envSchema.safeParse(process.env);

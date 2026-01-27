@@ -1,4 +1,4 @@
-import { Context } from 'grammy';
+import { Context, InputFile } from 'grammy';
 import { sessionManager } from '../../claude/session-manager.js';
 import {
   clearConversation,
@@ -24,7 +24,9 @@ import { isMediumUrl, fetchMediumArticle, FreediumArticle } from '../../medium/f
 import { escapeMarkdownV2 } from '../../telegram/markdown.js';
 import { getTTSSettings, setTTSEnabled, setTTSVoice } from '../../tts/tts-settings.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
+import { transcribeFile, downloadTelegramAudio } from '../../audio/transcribe.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
@@ -1558,4 +1560,142 @@ export async function handleReddit(ctx: Context): Promise<void> {
   }
 
   await executeRedditFetch(ctx, args);
+}
+
+// ── /transcribe command ────────────────────────────────────────────
+
+/**
+ * Send a transcript as text (short) or .txt document (long).
+ * Exported so voice.handler.ts can reuse it for the ForceReply path.
+ */
+export async function sendTranscriptResult(ctx: Context, transcript: string): Promise<void> {
+  if (transcript.length <= config.TRANSCRIBE_FILE_THRESHOLD_CHARS) {
+    await messageSender.sendMessage(ctx, transcript);
+  } else {
+    const tmpPath = path.join(os.tmpdir(), `claudegram_transcript_${Date.now()}.txt`);
+    try {
+      fs.writeFileSync(tmpPath, transcript, 'utf-8');
+      const inputFile = new InputFile(fs.readFileSync(tmpPath), 'transcript.txt');
+      await ctx.replyWithDocument(inputFile, {
+        caption: `🎤 Transcript (${transcript.length} chars)`,
+      });
+    } finally {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Download a Telegram file by file_id → transcribe → send result.
+ * Shared helper for reply-to and ForceReply paths.
+ */
+async function transcribeAndSend(
+  ctx: Context,
+  fileId: string,
+  mimeHint?: string
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const ackMsg = await ctx.reply('🎤 Transcribing...', { parse_mode: undefined });
+  let tempFilePath: string | null = null;
+
+  try {
+    const file = await ctx.api.getFile(fileId);
+    if (!file.file_path) throw new Error('Telegram did not return file_path.');
+
+    const ext = mimeHint?.includes('ogg') ? '.ogg'
+      : mimeHint?.includes('mp3') ? '.mp3'
+      : mimeHint?.includes('wav') ? '.wav'
+      : mimeHint?.includes('mp4') ? '.m4a'
+      : '.oga';
+    tempFilePath = path.join(os.tmpdir(), `claudegram_transcribe_${Date.now()}${ext}`);
+
+    await downloadTelegramAudio(config.TELEGRAM_BOT_TOKEN, file.file_path, tempFilePath);
+
+    const buf = fs.readFileSync(tempFilePath);
+    if (!buf.length) throw new Error('Downloaded empty audio file.');
+
+    const transcript = await transcribeFile(tempFilePath);
+
+    // Remove ack
+    try { await ctx.api.deleteMessage(chatId, ackMsg.message_id); } catch { /* ignore */ }
+
+    await sendTranscriptResult(ctx, transcript);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Transcribe] Error:', error);
+    try {
+      await ctx.api.editMessageText(chatId, ackMsg.message_id, `❌ ${errorMessage}`, { parse_mode: undefined });
+    } catch {
+      await ctx.reply(`❌ Transcription error: ${esc(errorMessage)}`, { parse_mode: 'MarkdownV2' });
+    }
+  } finally {
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch { /* ignore */ }
+    }
+  }
+}
+
+export async function handleTranscribe(ctx: Context): Promise<void> {
+  // Path A: reply to a voice/audio/audio-document message
+  const reply = ctx.message?.reply_to_message;
+  if (reply) {
+    const voice = (reply as { voice?: { file_id: string; mime_type?: string } }).voice;
+    const audio = (reply as { audio?: { file_id: string; mime_type?: string } }).audio;
+    const doc = (reply as { document?: { file_id: string; mime_type?: string } }).document;
+
+    const fileId = voice?.file_id
+      || audio?.file_id
+      || (doc?.mime_type?.startsWith('audio/') ? doc.file_id : null);
+    const mime = voice?.mime_type || audio?.mime_type || doc?.mime_type;
+
+    if (fileId) {
+      await transcribeAndSend(ctx, fileId, mime);
+      return;
+    }
+  }
+
+  // Path B: no audio attached — send ForceReply prompt
+  await ctx.reply(
+    '🎤 *Transcribe Audio*\n\n_Send a voice note or audio file:_',
+    {
+      parse_mode: 'MarkdownV2',
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: 'Send a voice note or audio file',
+        selective: true,
+      },
+    }
+  );
+}
+
+/**
+ * Handle audio messages (message:audio) sent as reply to the Transcribe ForceReply.
+ */
+export async function handleTranscribeAudio(ctx: Context): Promise<void> {
+  const replyTo = ctx.message?.reply_to_message;
+  if (!replyTo || !replyTo.from?.is_bot) return;
+  const replyText = (replyTo as { text?: string }).text || '';
+  if (!replyText.includes('Transcribe Audio')) return;
+
+  const audio = ctx.message?.audio;
+  if (!audio) return;
+
+  await transcribeAndSend(ctx, audio.file_id, audio.mime_type);
+}
+
+/**
+ * Handle document messages with audio MIME sent as reply to the Transcribe ForceReply.
+ */
+export async function handleTranscribeDocument(ctx: Context): Promise<void> {
+  const replyTo = ctx.message?.reply_to_message;
+  if (!replyTo || !replyTo.from?.is_bot) return;
+  const replyText = (replyTo as { text?: string }).text || '';
+  if (!replyText.includes('Transcribe Audio')) return;
+
+  const doc = ctx.message?.document;
+  if (!doc || !doc.mime_type?.startsWith('audio/')) return;
+
+  await transcribeAndSend(ctx, doc.file_id, doc.mime_type);
 }

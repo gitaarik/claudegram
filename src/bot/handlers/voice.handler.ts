@@ -18,78 +18,11 @@ import {
 import { escapeMarkdownV2 } from '../../telegram/markdown.js';
 import { getStreamingMode } from './command.handler.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
+import { transcribeFile } from '../../audio/transcribe.js';
+import { sendTranscriptResult } from './command.handler.js';
 
 function esc(text: string): string {
   return escapeMarkdownV2(text);
-}
-
-/**
- * Extract the transcript text from groq_transcribe.py stdout.
- * The script prints "Full text:\n<text>" as the last output.
- */
-function parseTranscript(stdout: string): string {
-  const marker = 'Full text:\n';
-  const idx = stdout.lastIndexOf(marker);
-  if (idx !== -1) {
-    return stdout.slice(idx + marker.length).trim();
-  }
-  // Fallback: return the last non-empty line
-  const lines = stdout.trim().split('\n').filter((l) => l.trim());
-  return lines[lines.length - 1] || '';
-}
-
-/**
- * Transcribe an audio file using groq_transcribe.py.
- * Returns the transcript text.
- */
-function transcribeFile(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      config.GROQ_TRANSCRIBE_PATH,
-      filePath,
-      '--task', 'transcribe',
-      '--language', config.VOICE_LANGUAGE,
-    ];
-
-    const env = { ...process.env };
-    if (config.GROQ_API_KEY) {
-      env.GROQ_API_KEY = config.GROQ_API_KEY;
-    }
-
-    execFile(
-      'python3',
-      args,
-      {
-        timeout: config.VOICE_TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024,
-        cwd: path.dirname(config.GROQ_TRANSCRIBE_PATH),
-        env,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          const stderrText = (stderr || '').trim();
-          if (stderrText.includes('GROQ_API_KEY')) {
-            reject(new Error('GROQ_API_KEY not configured. Set it in .env to enable voice transcription.'));
-          } else if (stderrText.includes('ModuleNotFoundError')) {
-            const modMatch = stderrText.match(/No module named '(\w+)'/);
-            reject(new Error(`Missing Python dependency: ${modMatch ? modMatch[1] : 'unknown'}`));
-          } else if ((error as { killed?: boolean }).killed) {
-            reject(new Error('Transcription timed out.'));
-          } else {
-            reject(new Error(stderrText || error.message));
-          }
-          return;
-        }
-
-        const transcript = parseTranscript(stdout || '');
-        if (!transcript) {
-          reject(new Error('Empty transcription result'));
-          return;
-        }
-        resolve(transcript);
-      }
-    );
-  });
 }
 
 export async function handleVoice(ctx: Context): Promise<void> {
@@ -110,6 +43,16 @@ export async function handleVoice(ctx: Context): Promise<void> {
     return;
   }
   markProcessed(messageId);
+
+  // If this is a reply to the bot's "Transcribe Audio" ForceReply, route to transcribe-only flow
+  const replyTo = ctx.message?.reply_to_message;
+  if (replyTo && replyTo.from?.is_bot) {
+    const replyText = (replyTo as { text?: string }).text || '';
+    if (replyText.includes('Transcribe Audio')) {
+      await handleTranscribeOnly(ctx, chatId, messageId, voice);
+      return;
+    }
+  }
 
   // Check session
   const session = sessionManager.getSession(chatId);
@@ -264,6 +207,72 @@ export async function handleVoice(ctx: Context): Promise<void> {
         fs.unlinkSync(tempFilePath);
         console.log(`[Voice] Cleaned up ${tempFilePath}`);
       } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Transcribe-only flow: voice note sent as reply to "Transcribe Audio" ForceReply.
+ * Does NOT send transcript to the Claude agent.
+ */
+async function handleTranscribeOnly(
+  ctx: Context,
+  chatId: number,
+  messageId: number,
+  voice: { file_id: string; file_size?: number; mime_type?: string }
+): Promise<void> {
+  const ackMsg = await ctx.reply('🎤 Transcribing...', { parse_mode: undefined });
+
+  let tempFilePath: string | null = null;
+
+  try {
+    const file = await ctx.api.getFile(voice.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+    const ext = voice.mime_type?.includes('ogg') ? '.ogg' : '.oga';
+    tempFilePath = path.join(os.tmpdir(), `claudegram_transcribe_${messageId}${ext}`);
+
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'curl',
+        ['-sS', '-f', '--connect-timeout', '10', '--max-time', '30',
+         '--retry', '2', '--retry-delay', '2',
+         '-o', tempFilePath!,
+         fileUrl],
+        { timeout: 60_000 },
+        (error, _stdout, stderr) => {
+          if (error) {
+            const msg = (stderr || '').trim() || error.message;
+            reject(new Error(`Failed to download voice file: ${msg}`));
+          } else {
+            resolve();
+          }
+        }
+      );
+    });
+
+    const audioBuffer = fs.readFileSync(tempFilePath);
+    if (!audioBuffer.length) {
+      throw new Error('Downloaded empty voice file.');
+    }
+
+    const transcript = await transcribeFile(tempFilePath);
+
+    // Remove ack
+    try { await ctx.api.deleteMessage(chatId, ackMsg.message_id); } catch { /* ignore */ }
+
+    await sendTranscriptResult(ctx, transcript);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Transcribe] Voice ForceReply error:', error);
+    try {
+      await ctx.api.editMessageText(chatId, ackMsg.message_id, `❌ ${errorMessage}`, { parse_mode: undefined });
+    } catch {
+      await ctx.reply(`❌ Transcription error: ${esc(errorMessage)}`, { parse_mode: 'MarkdownV2' });
+    }
+  } finally {
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch { /* ignore */ }
     }
   }
 }
