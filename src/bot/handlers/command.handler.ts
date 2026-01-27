@@ -19,7 +19,8 @@ import {
   queueRequest,
   setAbortController,
 } from '../../claude/request-queue.js';
-import { createTelegraphFromFile } from '../../telegram/telegraph.js';
+import { createTelegraphFromFile, createTelegraphPage } from '../../telegram/telegraph.js';
+import { isMediumUrl, fetchMediumArticle, FreediumArticle } from '../../medium/freedium.js';
 import { escapeMarkdownV2 } from '../../telegram/markdown.js';
 import { getTTSSettings, setTTSEnabled, setTTSVoice } from '../../tts/tts-settings.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
@@ -1233,6 +1234,22 @@ function buildRedditOutputPath(ctx: Context, tokens: string[]): string {
   return path.join(dir, `reddit_${slug}_${stamp}.json`);
 }
 
+function slugFromUrl(input: string): string {
+  const cleaned = input.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  return cleaned.slice(0, 60) || 'medium';
+}
+
+function ensureMediumOutputDir(ctx: Context, url: string): string {
+  const chatId = ctx.chat?.id;
+  const session = chatId ? sessionManager.getSession(chatId) : null;
+  const baseDir = session ? session.workingDirectory : process.cwd();
+  const slug = slugFromUrl(url);
+  const dir = path.join(baseDir, '.claudegram', 'medium', slug);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+
 async function runRedditFetch(
   ctx: Context,
   scriptPath: string,
@@ -1346,6 +1363,172 @@ export async function executeRedditFetch(
 
     await replyMd(ctx, userMessage);
   }
+}
+
+// Pending Freedium results keyed by chatId, with 5-min TTL
+const pendingMediumResults = new Map<number, { article: FreediumArticle; messageId: number; expiresAt: number }>();
+const MEDIUM_RESULT_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Fetch a Medium article via Freedium and present inline action buttons.
+ */
+export async function executeMediumFetch(
+  ctx: Context,
+  args: string
+): Promise<void> {
+  await ctx.replyWithChatAction('typing');
+
+  const url = args.trim().split(/\s+/)[0];
+
+  if (!url) {
+    await replyMd(ctx, '❌ Missing URL\\. Example: `/medium https://medium.com/...`');
+    return;
+  }
+
+  if (!isMediumUrl(url)) {
+    await replyMd(ctx, '❌ Not a recognized Medium URL\\.\n\nSupported: medium\\.com, towardsdatascience\\.com, and other known Medium publication domains\\.');
+    return;
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  try {
+    const article = await fetchMediumArticle(url);
+
+    // Build preview: title + author + first ~200 chars of markdown
+    const preview = article.markdown.length > 200
+      ? article.markdown.slice(0, 200).trimEnd() + '...'
+      : article.markdown;
+
+    const previewText =
+      `📰 *${esc(article.title)}*\n` +
+      `_by ${esc(article.author)}_\n\n` +
+      `${esc(preview)}\n\n` +
+      `_${article.markdown.length} chars — choose an action:_`;
+
+    const msg = await ctx.reply(previewText, {
+      parse_mode: 'MarkdownV2',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📄 Telegraph', callback_data: 'medium:telegraph' },
+            { text: '💾 Save .md', callback_data: 'medium:save' },
+            { text: '📄💾 Both', callback_data: 'medium:both' },
+          ],
+        ],
+      },
+    });
+
+    // Store result for callback handling
+    pendingMediumResults.set(chatId, {
+      article,
+      messageId: msg.message_id,
+      expiresAt: Date.now() + MEDIUM_RESULT_TTL_MS,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    await replyMd(ctx, `❌ Medium fetch failed: ${esc(message.substring(0, 300))}`);
+  }
+}
+
+/**
+ * Handle inline keyboard callbacks for Medium article actions.
+ */
+export async function handleMediumCallback(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const data = ctx.callbackQuery?.data;
+  if (!data || !data.startsWith('medium:')) return;
+
+  const action = data.replace('medium:', '');
+
+  // Look up pending result
+  const pending = pendingMediumResults.get(chatId);
+  if (!pending || Date.now() > pending.expiresAt) {
+    pendingMediumResults.delete(chatId);
+    await ctx.answerCallbackQuery({ text: 'Result expired. Please fetch again.' });
+    return;
+  }
+
+  const { article } = pending;
+  await ctx.answerCallbackQuery();
+
+  const doTelegraph = action === 'telegraph' || action === 'both';
+  const doSave = action === 'save' || action === 'both';
+
+  let telegraphUrl: string | null = null;
+  let mdPath: string | null = null;
+
+  try {
+    if (doTelegraph) {
+      telegraphUrl = await createTelegraphPage(article.title, article.markdown);
+    }
+
+    if (doSave) {
+      const outputDir = ensureMediumOutputDir(ctx, article.url);
+      const slug = slugFromUrl(article.url);
+      mdPath = path.join(outputDir, `${slug}.md`);
+      fs.writeFileSync(mdPath, article.markdown, 'utf-8');
+    }
+
+    // Build result message
+    let resultText = `📰 *${esc(article.title)}*\n_by ${esc(article.author)}_\n\n`;
+
+    if (telegraphUrl) {
+      resultText += `📄 [Open in Instant View](${esc(telegraphUrl)})\n`;
+    }
+    if (mdPath) {
+      resultText += `💾 Markdown saved \\(${article.markdown.length} chars\\)`;
+    }
+
+    // Edit the original message to show results
+    try {
+      await ctx.editMessageText(resultText, { parse_mode: 'MarkdownV2' });
+    } catch {
+      // If edit fails (e.g. message too old), send new message
+      await replyMd(ctx, resultText);
+    }
+
+    // Send .md file as document
+    if (mdPath) {
+      await messageSender.sendDocument(ctx, mdPath, `📎 ${path.basename(mdPath)}`);
+    }
+
+    // Clean up pending result
+    pendingMediumResults.delete(chatId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    await replyMd(ctx, `❌ Action failed: ${esc(message.substring(0, 300))}`);
+  }
+}
+
+export async function handleMedium(ctx: Context): Promise<void> {
+  const text = ctx.message?.text || '';
+  const args = text.split(' ').slice(1).join(' ').trim();
+
+  if (!args) {
+    await ctx.reply(
+      `📰 *Medium Fetch*\n\n` +
+      `Fetch a Medium article via Freedium and convert to Markdown\\.\n\n` +
+      `*Examples:*\n` +
+      `• \`https://medium.com/@user/post\\-id\`\n` +
+      `• \`https://towardsdatascience.com/some\\-article\`\n\n` +
+      `👇 _Paste a Medium article URL:_`,
+      {
+        parse_mode: 'MarkdownV2',
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'https://medium.com/@user/post-id',
+          selective: true,
+        },
+      }
+    );
+    return;
+  }
+
+  await executeMediumFetch(ctx, args);
 }
 
 export async function handleReddit(ctx: Context): Promise<void> {

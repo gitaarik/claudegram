@@ -87,6 +87,20 @@ const envSchema = z.object({
     .string()
     .default('5')
     .transform((val) => parseInt(val, 10)),
+  // Medium / Freedium configuration
+  MEDIUM_TIMEOUT_MS: z
+    .string()
+    .default('15000')
+    .transform((val) => parseInt(val, 10)),
+  MEDIUM_FILE_THRESHOLD_CHARS: z
+    .string()
+    .default('8000')
+    .transform((val) => parseInt(val, 10)),
+  FREEDIUM_HOST: z.string().default('freedium-mirror.cfd'),
+  FREEDIUM_RATE_LIMIT_MS: z
+    .string()
+    .default('2000')
+    .transform((val) => parseInt(val, 10)),
   // Voice transcription (Groq Whisper)
   GROQ_API_KEY: z.string().optional(),
   GROQ_TRANSCRIBE_PATH: z.string().default(''),

@@ -132,6 +132,12 @@ Semantic mappings for natural language Reddit queries:
 - "this month" → --sort top --time month
 - "rising" → --sort rising`;
 
+const MEDIUM_TOOL_PROMPT = `
+
+Medium Tool:
+The user can fetch Medium articles via the /medium Telegram command (uses Freedium).
+You do NOT need to fetch Medium articles yourself — the bot handles it directly.`;
+
 const REASONING_SUMMARY_INSTRUCTIONS = `
 
 Reasoning Summary (required when enabled):
@@ -140,7 +146,7 @@ Reasoning Summary (required when enabled):
 - Do NOT reveal chain-of-thought, hidden reasoning, or sensitive tool outputs.
 - Skip the summary for very short acknowledgements or pure error messages.`;
 
-const SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}${config.CLAUDE_REASONING_SUMMARY ? REASONING_SUMMARY_INSTRUCTIONS : ''}`;
+const SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}${MEDIUM_TOOL_PROMPT}${config.CLAUDE_REASONING_SUMMARY ? REASONING_SUMMARY_INSTRUCTIONS : ''}`;
 
 type LogLevel = 'off' | 'basic' | 'verbose' | 'trace';
 const LOG_LEVELS: Record<LogLevel, number> = {

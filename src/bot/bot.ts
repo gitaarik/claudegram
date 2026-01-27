@@ -30,6 +30,8 @@ import {
   handleFile,
   handleTelegraph,
   handleReddit,
+  handleMedium,
+  handleMediumCallback,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -59,6 +61,7 @@ export async function createBot(): Promise<Bot> {
     { command: 'sessions', description: '📚 View saved sessions' },
     { command: 'resume', description: '▶️ Resume a session' },
     { command: 'reddit', description: '📡 Fetch Reddit posts & subreddits' },
+    { command: 'medium', description: '📰 Fetch Medium articles' },
     { command: 'commands', description: '📜 List all commands' },
   ]).then(() => {
     console.log('📋 Command menu registered');
@@ -103,6 +106,7 @@ export async function createBot(): Promise<Bot> {
 
   // Reddit
   bot.command('reddit', handleReddit);
+  bot.command('medium', handleMedium);
 
   // Callback query handler for inline keyboards
   bot.on('callback_query:data', async (ctx) => {
@@ -118,6 +122,8 @@ export async function createBot(): Promise<Bot> {
       await handleTTSCallback(ctx);
     } else if (data.startsWith('clear:')) {
       await handleClearCallback(ctx);
+    } else if (data.startsWith('medium:')) {
+      await handleMediumCallback(ctx);
     }
   });
 
