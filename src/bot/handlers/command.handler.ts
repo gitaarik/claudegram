@@ -43,6 +43,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
+import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 
 // Helper for consistent MarkdownV2 replies
 async function replyMd(ctx: Context, text: string): Promise<void> {
@@ -974,7 +975,7 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
     );
     child.unref();
   } catch (error) {
-    console.error('[BotCtl] Failed to restart:', error);
+    console.error('[BotCtl] Failed to restart:', sanitizeError(error));
   }
 }
 
@@ -1916,7 +1917,7 @@ export async function sendTranscriptResult(ctx: Context, transcript: string): Pr
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       } catch (e) {
-        console.warn(`[transcribe] Cleanup failed for ${tmpPath}:`, e instanceof Error ? e.message : e);
+        console.warn(`[transcribe] Cleanup failed for ${sanitizePath(tmpPath)}:`, sanitizeError(e));
       }
     }
   }
@@ -1965,7 +1966,7 @@ async function transcribeAndSend(
     await sendTranscriptResult(ctx, transcript);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Transcribe] Error:', error);
+    console.error('[Transcribe] Error:', sanitizeError(error));
     try {
       await ctx.api.editMessageText(chatId, ackMsg.message_id, `❌ ${errorMessage}`, { parse_mode: undefined });
     } catch {
@@ -1976,7 +1977,7 @@ async function transcribeAndSend(
       try {
         fs.unlinkSync(tempFilePath);
       } catch (e) {
-        console.warn(`[Transcribe] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+        console.warn(`[Transcribe] Cleanup failed for ${sanitizePath(tempFilePath)}:`, sanitizeError(e));
       }
     }
   }
@@ -2377,7 +2378,7 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
           try {
             if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
           } catch (e) {
-            console.warn(`[extract] Cleanup failed for ${tmpPath}:`, e instanceof Error ? e.message : e);
+            console.warn(`[extract] Cleanup failed for ${sanitizePath(tmpPath)}:`, sanitizeError(e));
           }
         }
       }
@@ -2398,7 +2399,7 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[extract] Error:', error);
+    console.error('[extract] Error:', sanitizeError(error));
     try {
       await ctx.api.editMessageText(chatId, ackMsg.message_id, `\u{274C} ${errorMessage}`, { parse_mode: undefined });
     } catch {

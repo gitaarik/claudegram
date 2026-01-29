@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { config } from '../config.js';
 import { transcribeFile } from '../audio/transcribe.js';
+import { sanitizeError, sanitizePath } from '../utils/sanitize.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -531,7 +532,7 @@ export async function extractMedia(opts: ExtractOptions): Promise<ExtractResult>
     return result;
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[extract] Error:', error);
+    console.error('[extract] Error:', sanitizeError(error));
     throw new Error(msg);
   } finally {
     result._tempDir = tempDir;
@@ -548,7 +549,7 @@ export function cleanupExtractResult(result: ExtractResult): void {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      console.warn(`[extract] Cleanup failed for ${tempDir}:`, e instanceof Error ? e.message : e);
+      console.warn(`[extract] Cleanup failed for ${sanitizePath(tempDir)}:`, sanitizeError(e));
     }
     return;
   }
@@ -563,7 +564,7 @@ export function cleanupExtractResult(result: ExtractResult): void {
         return;
       }
     } catch (e) {
-      console.warn(`[extract] Cleanup failed for ${p}:`, e instanceof Error ? e.message : e);
+      console.warn(`[extract] Cleanup failed for ${sanitizePath(p)}:`, sanitizeError(e));
     }
   }
 }

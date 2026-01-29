@@ -161,6 +161,11 @@ async function fetchHtml(url: string): Promise<string> {
   });
 }
 
+// Limits to prevent ReDoS and resource exhaustion
+const MAX_DASH_XML_SIZE = 512 * 1024; // 512KB max manifest size
+const MAX_ADAPTATION_SETS = 20;
+const MAX_REPRESENTATIONS = 50;
+
 async function parseDashManifest(dashUrl: string): Promise<{ videoUrl?: string; audioUrl?: string } | null> {
   try {
     const response = await fetchWithTimeout(dashUrl, { headers: { 'User-Agent': USER_AGENT } }, DASH_FETCH_TIMEOUT_MS);
@@ -169,12 +174,27 @@ async function parseDashManifest(dashUrl: string): Promise<{ videoUrl?: string; 
     }
     const xml = await response.text();
 
+    // Prevent ReDoS by limiting input size
+    if (xml.length > MAX_DASH_XML_SIZE) {
+      console.warn(`[vReddit] DASH manifest too large (${xml.length} bytes), skipping`);
+      return null;
+    }
+
     let bestVideo: { bandwidth: number; url: string } | null = null;
     let bestAudio: { bandwidth: number; url: string } | null = null;
 
     const adaptationRe = /<AdaptationSet([^>]*)>([\s\S]*?)<\/AdaptationSet>/gi;
     let adaptationMatch: RegExpExecArray | null;
+    let adaptationCount = 0;
+    let totalRepCount = 0;
+
     while ((adaptationMatch = adaptationRe.exec(xml)) !== null) {
+      // Limit iterations to prevent DoS
+      if (++adaptationCount > MAX_ADAPTATION_SETS) {
+        console.warn('[vReddit] Too many AdaptationSets, stopping parse');
+        break;
+      }
+
       const attrs = adaptationMatch[1] || '';
       const body = adaptationMatch[2] || '';
       let contentType = '';
@@ -191,7 +211,14 @@ async function parseDashManifest(dashUrl: string): Promise<{ videoUrl?: string; 
 
       const repRe = /<Representation([^>]*)>([\s\S]*?)<\/Representation>/gi;
       let repMatch: RegExpExecArray | null;
+
       while ((repMatch = repRe.exec(body)) !== null) {
+        // Limit total representations across all adaptation sets
+        if (++totalRepCount > MAX_REPRESENTATIONS) {
+          console.warn('[vReddit] Too many Representations, stopping parse');
+          break;
+        }
+
         const repAttrs = repMatch[1] || '';
         const repBody = repMatch[2] || '';
         const bandwidthMatch = repAttrs.match(/bandwidth="(\d+)"/i);
@@ -216,6 +243,8 @@ async function parseDashManifest(dashUrl: string): Promise<{ videoUrl?: string; 
           }
         }
       }
+
+      if (totalRepCount > MAX_REPRESENTATIONS) break;
     }
 
     return { videoUrl: bestVideo?.url, audioUrl: bestAudio?.url };

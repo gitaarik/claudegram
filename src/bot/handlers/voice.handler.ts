@@ -20,6 +20,7 @@ import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import { transcribeFile } from '../../audio/transcribe.js';
 import { sendTranscriptResult } from './command.handler.js';
 import { downloadFileSecure, getTelegramFileUrl } from '../../utils/download.js';
+import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 
 export async function handleVoice(ctx: Context): Promise<void> {
   const chatId = ctx.chat?.id;
@@ -170,7 +171,7 @@ export async function handleVoice(ctx: Context): Promise<void> {
     if ((error as Error).message === 'Queue cleared') return;
 
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Voice] Error:', error);
+    console.error('[Voice] Error:', sanitizeError(error));
 
     // Try to update ack message with error
     try {
@@ -188,9 +189,9 @@ export async function handleVoice(ctx: Context): Promise<void> {
     if (tempFilePath && fs.existsSync(tempFilePath)) {
       try {
         fs.unlinkSync(tempFilePath);
-        console.log(`[Voice] Cleaned up ${tempFilePath}`);
+        console.log(`[Voice] Cleaned up ${sanitizePath(tempFilePath)}`);
       } catch (e) {
-        console.warn(`[Voice] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+        console.warn(`[Voice] Cleanup failed for ${sanitizePath(tempFilePath)}:`, sanitizeError(e));
       }
     }
   }
@@ -236,7 +237,7 @@ async function handleTranscribeOnly(
     await sendTranscriptResult(ctx, transcript);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Transcribe] Voice ForceReply error:', error);
+    console.error('[Transcribe] Voice ForceReply error:', sanitizeError(error));
     try {
       await ctx.api.editMessageText(chatId, ackMsg.message_id, `❌ ${errorMessage}`, { parse_mode: undefined });
     } catch {
@@ -247,7 +248,7 @@ async function handleTranscribeOnly(
       try {
         fs.unlinkSync(tempFilePath);
       } catch (e) {
-        console.warn(`[Transcribe] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+        console.warn(`[Transcribe] Cleanup failed for ${sanitizePath(tempFilePath)}:`, sanitizeError(e));
       }
     }
   }
