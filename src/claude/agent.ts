@@ -1,11 +1,36 @@
-import { query, type SDKMessage, type PermissionMode, type SettingSource, type HookEvent, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type SDKMessage,
+  type SDKResultMessage,
+  type SDKCompactBoundaryMessage,
+  type SDKStatusMessage,
+  type SDKSystemMessage,
+  type PermissionMode,
+  type SettingSource,
+  type HookEvent,
+  type HookCallbackMatcher,
+} from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import { sessionManager } from './session-manager.js';
 import { config } from '../config.js';
 
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalCostUsd: number;
+  contextWindow: number;
+  numTurns: number;
+  model: string;
+}
+
 interface AgentResponse {
   text: string;
   toolsUsed: string[];
+  usage?: AgentUsage;
+  compaction?: { trigger: 'manual' | 'auto'; preTokens: number };
+  sessionInit?: { model: string; sessionId: string };
 }
 
 interface ConversationMessage {
@@ -30,8 +55,15 @@ const conversationHistory: Map<number, ConversationMessage[]> = new Map();
 // Track Claude Code session IDs per chat for conversation continuity
 const chatSessionIds: Map<number, string> = new Map();
 
-// Track current model per chat (default: sonnet)
+// Track current model per chat (default: opus)
 const chatModels: Map<number, string> = new Map();
+
+// Cache latest usage per chat for /context and /status commands
+const chatUsageCache: Map<number, AgentUsage> = new Map();
+
+export function getCachedUsage(chatId: number): AgentUsage | undefined {
+  return chatUsageCache.get(chatId);
+}
 
 const BASE_SYSTEM_PROMPT = `You are ${config.BOT_NAME}, an AI assistant helping via Telegram.
 
@@ -249,6 +281,9 @@ export async function sendToAgent(
   let fullText = '';
   const toolsUsed: string[] = [];
   let gotResult = false;
+  let resultUsage: AgentUsage | undefined;
+  let compactionEvent: { trigger: 'manual' | 'auto'; preTokens: number } | undefined;
+  let initEvent: { model: string; sessionId: string } | undefined;
 
   // Determine permission mode
   const permissionMode = getPermissionMode(command);
@@ -277,9 +312,23 @@ export async function sendToAgent(
       ? undefined
       : ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task'];
 
+    // PreCompact hook always registered (logging only — notification sent from compact_boundary message)
+    const preCompactHook: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {
+      PreCompact: [{
+        hooks: [async (input) => {
+          logAt('basic', '[Hook] PreCompact — context is about to be compacted', {
+            trigger: (input as Record<string, unknown>).trigger,
+            customInstructions: (input as Record<string, unknown>).custom_instructions,
+          });
+          return { continue: true };
+        }],
+      }],
+    };
+
     const hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> | undefined =
       LOG_LEVELS[getLogLevel()] >= LOG_LEVELS.verbose
         ? {
+          ...preCompactHook,
           PreToolUse: [{
             hooks: [async (input) => {
               logAt('verbose', '[Hook] PreToolUse', input);
@@ -323,7 +372,7 @@ export async function sendToAgent(
             }],
           }],
         }
-        : undefined;
+        : preCompactHook;
 
     // Validate cwd exists — stale sessions may reference paths from another OS
     let cwd = session.workingDirectory;
@@ -396,7 +445,28 @@ export async function sendToAgent(
           }
         }
       } else if (responseMessage.type === 'system') {
-        logAt('verbose', `[Claude] System: ${responseMessage.subtype ?? 'unknown'}`, responseMessage);
+        if (responseMessage.subtype === 'compact_boundary') {
+          const cbMsg = responseMessage as SDKCompactBoundaryMessage;
+          compactionEvent = {
+            trigger: cbMsg.compact_metadata.trigger,
+            preTokens: cbMsg.compact_metadata.pre_tokens,
+          };
+          logAt('basic', `[Claude] COMPACTION: trigger=${cbMsg.compact_metadata.trigger}, pre_tokens=${cbMsg.compact_metadata.pre_tokens}`);
+        } else if (responseMessage.subtype === 'init') {
+          const sysMsg = responseMessage as SDKSystemMessage;
+          initEvent = {
+            model: sysMsg.model,
+            sessionId: sysMsg.session_id,
+          };
+          logAt('basic', `[Claude] SESSION INIT: model=${sysMsg.model}, session=${sysMsg.session_id}`);
+        } else if (responseMessage.subtype === 'status') {
+          const statusMsg = responseMessage as SDKStatusMessage;
+          if (statusMsg.status === 'compacting') {
+            logAt('basic', '[Claude] STATUS: compacting in progress');
+          }
+        } else {
+          logAt('verbose', `[Claude] System: ${responseMessage.subtype ?? 'unknown'}`, responseMessage);
+        }
       } else if (responseMessage.type === 'tool_progress') {
         logAt('verbose', `[Claude] Tool progress: ${responseMessage.tool_name}`, responseMessage);
       } else if (responseMessage.type === 'tool_use_summary') {
@@ -414,6 +484,25 @@ export async function sendToAgent(
           chatSessionIds.set(chatId, responseMessage.session_id);
           sessionManager.setClaudeSessionId(chatId, responseMessage.session_id);
           logAt('basic', `[Claude] Stored session ${responseMessage.session_id} for chat ${chatId}`);
+        }
+
+        // Extract usage data from result
+        const resultMsg = responseMessage as SDKResultMessage;
+        if (resultMsg.modelUsage) {
+          const modelKey = Object.keys(resultMsg.modelUsage)[0];
+          if (modelKey && resultMsg.modelUsage[modelKey]) {
+            const mu = resultMsg.modelUsage[modelKey];
+            resultUsage = {
+              inputTokens: mu.inputTokens,
+              outputTokens: mu.outputTokens,
+              cacheReadTokens: mu.cacheReadInputTokens,
+              cacheWriteTokens: mu.cacheCreationInputTokens,
+              totalCostUsd: resultMsg.total_cost_usd,
+              contextWindow: mu.contextWindow,
+              numTurns: resultMsg.num_turns,
+              model: modelKey,
+            };
+          }
         }
 
         if (responseMessage.subtype === 'success') {
@@ -461,9 +550,17 @@ export async function sendToAgent(
 
   conversationHistory.set(chatId, history);
 
+  // Cache usage for /context and /status commands
+  if (resultUsage) {
+    chatUsageCache.set(chatId, resultUsage);
+  }
+
   return {
     text: stripReasoningSummary(fullText) || 'No response from Claude.',
     toolsUsed,
+    usage: resultUsage,
+    compaction: compactionEvent,
+    sessionInit: initEvent,
   };
 }
 
@@ -556,6 +653,7 @@ IMPORTANT: When you have fully completed this task, respond with the word "DONE"
 export function clearConversation(chatId: number): void {
   conversationHistory.delete(chatId);
   chatSessionIds.delete(chatId);
+  chatUsageCache.delete(chatId);
 }
 
 export function setModel(chatId: number, model: string): void {
@@ -563,7 +661,7 @@ export function setModel(chatId: number, model: string): void {
 }
 
 export function getModel(chatId: number): string {
-  return chatModels.get(chatId) || 'sonnet';
+  return chatModels.get(chatId) || 'opus';
 }
 
 export function clearModel(chatId: number): void {

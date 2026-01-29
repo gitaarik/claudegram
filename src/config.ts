@@ -135,6 +135,15 @@ const envSchema = z.object({
     .string()
     .default('180000')
     .transform((val) => parseInt(val, 10)),
+  // Context visibility
+  CONTEXT_SHOW_USAGE: z
+    .string()
+    .default('false')
+    .transform((val) => val.toLowerCase() === 'true'),
+  CONTEXT_NOTIFY_COMPACTION: z
+    .string()
+    .default('true')
+    .transform((val) => val.toLowerCase() === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);

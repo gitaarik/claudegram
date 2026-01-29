@@ -7,6 +7,7 @@ import {
   setModel,
   getModel,
   isDangerousMode,
+  getCachedUsage,
 } from '../../claude/agent.js';
 import { config } from '../../config.js';
 import { messageSender } from '../../telegram/message-sender.js';
@@ -26,6 +27,7 @@ import { getTTSSettings, setTTSEnabled, setTTSVoice, setTTSAutoplay } from '../.
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import { transcribeFile, downloadTelegramAudio } from '../../audio/transcribe.js';
 import { executeVReddit } from '../../reddit/vreddit.js';
+import { fmtTokens, getProgressBar } from './message.handler.js';
 import {
   detectPlatform,
   platformLabel,
@@ -732,16 +734,25 @@ export async function handleStatus(ctx: Context): Promise<void> {
   const currentModel = getModel(chatId);
   const dangerousMode = isDangerousMode() ? '⚠️ ENABLED' : 'Disabled';
 
-  const status = `📊 *Session Status*
+  let status = `📊 *Session Status*
 
 • *Working Directory:* \`${esc(session.workingDirectory)}\`
 • *Session ID:* \`${esc(session.conversationId)}\`
 • *Model:* ${esc(currentModel)}
 • *Created:* ${esc(session.createdAt.toLocaleString())}
 • *Last Activity:* ${esc(session.lastActivity.toLocaleString())}
-• *Mode:* ${config.STREAMING_MODE}
-• *Dangerous Mode:* ${dangerousMode}
+• *Mode:* ${esc(config.STREAMING_MODE)}
+• *Dangerous Mode:* ${esc(dangerousMode)}
 • *Uptime:* ${esc(getUptimeFormatted())}`;
+
+  const cached = getCachedUsage(chatId);
+  if (cached) {
+    const pct = cached.contextWindow > 0
+      ? Math.round(((cached.inputTokens + cached.outputTokens) / cached.contextWindow) * 100)
+      : 0;
+    status += `\n• *Context:* ${esc(String(pct))}% \\(${esc(fmtTokens(cached.inputTokens + cached.outputTokens))}/${esc(fmtTokens(cached.contextWindow))}\\)`;
+    status += `\n• *Session Cost:* \\$${esc(cached.totalCostUsd.toFixed(4))}`;
+  }
 
   await replyMd(ctx, status);
 }
@@ -876,6 +887,31 @@ export async function handleContext(ctx: Context): Promise<void> {
     return;
   }
 
+  // Try cached SDK usage first (instant, no CLI shell-out)
+  const cached = getCachedUsage(chatId);
+  if (cached) {
+    const pct = cached.contextWindow > 0
+      ? Math.round(((cached.inputTokens + cached.outputTokens) / cached.contextWindow) * 100)
+      : 0;
+    const bar = getProgressBar(pct);
+
+    const output = `## 🧠 Context Usage\n\n`
+      + `${bar} **${pct}%** of context window\n\n`
+      + `- **Model:** ${cached.model}\n`
+      + `- **Input tokens:** ${fmtTokens(cached.inputTokens)}\n`
+      + `- **Output tokens:** ${fmtTokens(cached.outputTokens)}\n`
+      + `- **Cache read:** ${fmtTokens(cached.cacheReadTokens)}\n`
+      + `- **Cache write:** ${fmtTokens(cached.cacheWriteTokens)}\n`
+      + `- **Context window:** ${fmtTokens(cached.contextWindow)}\n`
+      + `- **Turns this session:** ${cached.numTurns}\n`
+      + `- **Cost this query:** $${cached.totalCostUsd.toFixed(4)}\n\n`
+      + `_Data from last query. Send a message then run /context for fresh data._`;
+
+    await messageSender.sendMessage(ctx, output);
+    return;
+  }
+
+  // Fallback: CLI shell-out approach
   if (!session.claudeSessionId) {
     await replyMd(
       ctx,
@@ -929,7 +965,7 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
 
   await replyMd(
     ctx,
-    '🔁 Restarting bot\\.\n\nAfter it comes back, use `/continue` or `/resume` to restore your session\\.'
+    '🔁 Restarting bot\\.\n\n⏳ Please wait at least *10\\-15 seconds* before checking status or resuming\\.\n\nThen use `/continue` or `/resume` to restore your session\\.'
   );
 
   try {
@@ -987,7 +1023,7 @@ export async function handleModelCommand(ctx: Context): Promise<void> {
     });
 
     await ctx.reply(
-      `🤖 *Select Model*\n\n_Current: ${esc(currentModel)}_\n\n• *sonnet* \\- Balanced \\(default\\)\n• *opus* \\- Most capable\n• *haiku* \\- Fast & light`,
+      `🤖 *Select Model*\n\n_Current: ${esc(currentModel)}_\n\n• *opus* \\- Most capable \\(default\\)\n• *sonnet* \\- Balanced\n• *haiku* \\- Fast & light`,
       {
         parse_mode: 'MarkdownV2',
         reply_markup: {

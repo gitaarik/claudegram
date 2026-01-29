@@ -1,6 +1,7 @@
 import { Context } from 'grammy';
-import { sendToAgent, sendLoopToAgent, clearConversation } from '../../claude/agent.js';
+import { sendToAgent, sendLoopToAgent, clearConversation, type AgentUsage } from '../../claude/agent.js';
 import { sessionManager } from '../../claude/session-manager.js';
+import { config } from '../../config.js';
 import { messageSender } from '../../telegram/message-sender.js';
 import { isDuplicate, markProcessed } from '../../telegram/deduplication.js';
 import { isStaleMessage } from '../middleware/stale-filter.js';
@@ -15,6 +16,7 @@ import { escapeMarkdownV2 } from '../../telegram/markdown.js';
 import { createTelegraphFromFile } from '../../telegram/telegraph.js';
 import { getStreamingMode, executeRedditFetch, executeMediumFetch, showExtractMenu } from './command.handler.js';
 import { executeVReddit } from '../../reddit/vreddit.js';
+import { detectPlatform, isValidUrl } from '../../media/extract.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -38,6 +40,64 @@ function extractRedditUrl(text: string): string | null {
     }
   }
   return null;
+}
+
+export function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+export function getProgressBar(pct: number): string {
+  const filled = Math.round(pct / 10);
+  const empty = 10 - filled;
+  const color = pct >= 80 ? '🔴' : pct >= 60 ? '🟡' : '🟢';
+  return color + ' [' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
+}
+
+async function sendUsageFooter(
+  ctx: Context,
+  usage: AgentUsage | undefined,
+): Promise<void> {
+  if (!config.CONTEXT_SHOW_USAGE || !usage) return;
+  const u = usage;
+  const pct = u.contextWindow > 0
+    ? Math.round(((u.inputTokens + u.outputTokens) / u.contextWindow) * 100)
+    : 0;
+  const bar = getProgressBar(pct);
+  const footer = `${bar} ${pct}% context · ${fmtTokens(u.inputTokens + u.outputTokens)}/${fmtTokens(u.contextWindow)} · $${u.totalCostUsd.toFixed(4)} · ${u.numTurns} turns`;
+  await ctx.reply(footer, { parse_mode: undefined });
+}
+
+async function sendCompactionNotification(
+  ctx: Context,
+  compaction: { trigger: 'manual' | 'auto'; preTokens: number } | undefined,
+): Promise<void> {
+  if (!config.CONTEXT_NOTIFY_COMPACTION || !compaction) return;
+  const c = compaction;
+  const emoji = c.trigger === 'auto' ? '⚠️' : 'ℹ️';
+  const triggerLabel = c.trigger === 'auto' ? 'Auto\\-compacted' : 'Manually compacted';
+  const msg = `${emoji} *Context Compacted*\n\n`
+    + `${triggerLabel} — previous context was ${esc(fmtTokens(c.preTokens))} tokens\\.\n`
+    + `The agent now has a summarized version of your conversation\\.\n\n`
+    + `_Tip: Use /handoff before compaction to save a detailed context document\\._`;
+  await ctx.reply(msg, { parse_mode: 'MarkdownV2' });
+}
+
+async function sendSessionInitNotification(
+  ctx: Context,
+  chatId: number,
+  sessionInit: { model: string; sessionId: string } | undefined,
+): Promise<void> {
+  if (!config.CONTEXT_NOTIFY_COMPACTION || !sessionInit) return;
+  const previousSessionId = sessionManager.getSession(chatId)?.claudeSessionId;
+  if (previousSessionId && sessionInit.sessionId !== previousSessionId) {
+    const msg = `🔄 *New Agent Session*\n\n`
+      + `A new agent session has started \\(previous context may be summarized\\)\\.\n`
+      + `Model: \`${esc(sessionInit.model)}\`\n\n`
+      + `_The agent may not remember earlier details\\. Consider sharing context\\._`;
+    await ctx.reply(msg, { parse_mode: 'MarkdownV2' });
+  }
 }
 
 function getAutoVRedditUrl(text: string): string | null {
@@ -144,6 +204,13 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const vRedditUrl = getAutoVRedditUrl(text);
   if (vRedditUrl) {
     await executeVReddit(ctx, vRedditUrl);
+    return;
+  }
+
+  // Auto-detect YouTube / TikTok / Instagram URLs sent as bare links → show extract menu
+  const trimmedText = text.trim();
+  if (isValidUrl(trimmedText) && detectPlatform(trimmedText) !== 'unknown') {
+    await showExtractMenu(ctx, trimmedText);
     return;
   }
 
@@ -324,6 +391,11 @@ async function handleAgentReply(
 
         await messageSender.finishStreaming(ctx, response.text);
         await maybeSendVoiceReply(ctx, response.text);
+
+        // Context visibility notifications
+        await sendUsageFooter(ctx, response.usage);
+        await sendCompactionNotification(ctx, response.compaction);
+        await sendSessionInitNotification(ctx, chatId, response.sessionInit);
       } catch (error) {
         await messageSender.cancelStreaming(ctx);
         throw error;
@@ -415,6 +487,11 @@ async function handleStreamingResponse(
 
     await messageSender.finishStreaming(ctx, response.text);
     await maybeSendVoiceReply(ctx, response.text);
+
+    // Context visibility notifications
+    await sendUsageFooter(ctx, response.usage);
+    await sendCompactionNotification(ctx, response.compaction);
+    await sendSessionInitNotification(ctx, chatId, response.sessionInit);
   } catch (error) {
     await messageSender.cancelStreaming(ctx);
     throw error;
@@ -435,4 +512,9 @@ async function handleWaitResponse(
   const response = await sendToAgent(chatId, message, { abortController });
   await messageSender.sendMessage(ctx, response.text);
   await maybeSendVoiceReply(ctx, response.text);
+
+  // Context visibility notifications
+  await sendUsageFooter(ctx, response.usage);
+  await sendCompactionNotification(ctx, response.compaction);
+  await sendSessionInitNotification(ctx, chatId, response.sessionInit);
 }
