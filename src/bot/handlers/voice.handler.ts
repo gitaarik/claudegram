@@ -1,5 +1,5 @@
 import { Context } from 'grammy';
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -20,6 +20,48 @@ import { getStreamingMode } from './command.handler.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import { transcribeFile } from '../../audio/transcribe.js';
 import { sendTranscriptResult } from './command.handler.js';
+
+/**
+ * Download a file from a URL using curl with stdin config.
+ * Prevents token exposure in process args (visible via `ps aux`).
+ */
+function downloadFileSecure(fileUrl: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const curlArgs = [
+      '-sS', '-f',
+      '--connect-timeout', '10',
+      '--max-time', '30',
+      '--retry', '2',
+      '--retry-delay', '2',
+      '-o', destPath,
+      '-K', '-'  // Read config from stdin
+    ];
+
+    const child = spawn('curl', curlArgs, { timeout: 60_000 });
+    let stderr = '';
+
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to spawn curl: ${err.message}`));
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        const msg = stderr.trim() || `curl exited with code ${code}`;
+        reject(new Error(`Failed to download file: ${msg}`));
+      }
+    });
+
+    // Write URL via stdin config format to avoid process arg exposure
+    child.stdin.write(`url = "${fileUrl}"\n`);
+    child.stdin.end();
+  });
+}
 
 function esc(text: string): string {
   return escapeMarkdownV2(text);
@@ -85,29 +127,11 @@ export async function handleVoice(ctx: Context): Promise<void> {
     const file = await ctx.api.getFile(voice.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-    // Download using curl (more reliable than Node fetch on this network)
+    // Download using curl with secure stdin config (prevents token exposure in ps)
     const ext = voice.mime_type?.includes('ogg') ? '.ogg' : '.oga';
     tempFilePath = path.join(os.tmpdir(), `claudegram_voice_${messageId}${ext}`);
 
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        'curl',
-        ['-sS', '-f', '--connect-timeout', '10', '--max-time', '30',
-         '--retry', '2', '--retry-delay', '2',
-         '-o', tempFilePath!,
-         fileUrl],
-        { timeout: 60_000 },
-        (error, _stdout, stderr) => {
-          if (error) {
-            const msg = (stderr || '').trim() || error.message;
-            console.error(`[Voice] curl download failed:`, msg);
-            reject(new Error(`Failed to download voice file: ${msg}`));
-          } else {
-            resolve();
-          }
-        }
-      );
-    });
+    await downloadFileSecure(fileUrl, tempFilePath);
 
     const audioBuffer = fs.readFileSync(tempFilePath);
     if (!audioBuffer.length) {
@@ -133,7 +157,10 @@ export async function handleVoice(ctx: Context): Promise<void> {
       } catch {
         try {
           await ctx.api.deleteMessage(chatId, ackMsg.message_id);
-        } catch { /* ignore */ }
+        } catch (e) {
+          // Telegram message deletion can fail if already deleted or expired
+          console.debug('[Voice] Failed to delete ack message:', e instanceof Error ? e.message : e);
+        }
       }
 
       await messageSender.sendMessage(ctx, `👤 ${transcript}`);
@@ -141,7 +168,9 @@ export async function handleVoice(ctx: Context): Promise<void> {
       // Remove ack message
       try {
         await ctx.api.deleteMessage(chatId, ackMsg.message_id);
-      } catch { /* ignore */ }
+      } catch (e) {
+        console.debug('[Voice] Failed to delete ack message:', e instanceof Error ? e.message : e);
+      }
     }
 
     // Check if already processing - show queue position
@@ -206,7 +235,9 @@ export async function handleVoice(ctx: Context): Promise<void> {
       try {
         fs.unlinkSync(tempFilePath);
         console.log(`[Voice] Cleaned up ${tempFilePath}`);
-      } catch { /* ignore */ }
+      } catch (e) {
+        console.warn(`[Voice] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+      }
     }
   }
 }
@@ -232,24 +263,7 @@ async function handleTranscribeOnly(
     const ext = voice.mime_type?.includes('ogg') ? '.ogg' : '.oga';
     tempFilePath = path.join(os.tmpdir(), `claudegram_transcribe_${messageId}${ext}`);
 
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        'curl',
-        ['-sS', '-f', '--connect-timeout', '10', '--max-time', '30',
-         '--retry', '2', '--retry-delay', '2',
-         '-o', tempFilePath!,
-         fileUrl],
-        { timeout: 60_000 },
-        (error, _stdout, stderr) => {
-          if (error) {
-            const msg = (stderr || '').trim() || error.message;
-            reject(new Error(`Failed to download voice file: ${msg}`));
-          } else {
-            resolve();
-          }
-        }
-      );
-    });
+    await downloadFileSecure(fileUrl, tempFilePath);
 
     const audioBuffer = fs.readFileSync(tempFilePath);
     if (!audioBuffer.length) {
@@ -259,7 +273,11 @@ async function handleTranscribeOnly(
     const transcript = await transcribeFile(tempFilePath);
 
     // Remove ack
-    try { await ctx.api.deleteMessage(chatId, ackMsg.message_id); } catch { /* ignore */ }
+    try {
+      await ctx.api.deleteMessage(chatId, ackMsg.message_id);
+    } catch (e) {
+      console.debug('[Transcribe] Failed to delete ack message:', e instanceof Error ? e.message : e);
+    }
 
     await sendTranscriptResult(ctx, transcript);
   } catch (error) {
@@ -272,7 +290,11 @@ async function handleTranscribeOnly(
     }
   } finally {
     if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try { fs.unlinkSync(tempFilePath); } catch { /* ignore */ }
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {
+        console.warn(`[Transcribe] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+      }
     }
   }
 }

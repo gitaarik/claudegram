@@ -22,6 +22,19 @@ function esc(text: string): string {
   return escapeMarkdownV2(text);
 }
 
+/**
+ * Validate URL protocol to prevent SSRF attacks.
+ * Only allows http/https protocols.
+ */
+function isValidProtocol(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 async function replyMd(ctx: Context, text: string): Promise<void> {
   await ctx.reply(text, { parse_mode: 'MarkdownV2' });
 }
@@ -43,15 +56,24 @@ function normalizeInput(input: string): string | null {
 }
 
 function ensureUrl(token: string): string | null {
-  if (token.startsWith('http://') || token.startsWith('https://')) return token;
-  if (token.startsWith('www.')) return `https://${token}`;
-  if (token.startsWith('reddit.com') || token.startsWith('old.reddit.com') || token.startsWith('new.reddit.com') || token.startsWith('m.reddit.com') || token.startsWith('redd.it') || token.startsWith('v.redd.it')) {
-    return `https://${token}`;
+  let url: string | null = null;
+
+  if (token.startsWith('http://') || token.startsWith('https://')) {
+    url = token;
+  } else if (token.startsWith('www.')) {
+    url = `https://${token}`;
+  } else if (token.startsWith('reddit.com') || token.startsWith('old.reddit.com') || token.startsWith('new.reddit.com') || token.startsWith('m.reddit.com') || token.startsWith('redd.it') || token.startsWith('v.redd.it')) {
+    url = `https://${token}`;
+  } else if (/^[a-z0-9]{5,10}$/i.test(token)) {
+    url = `https://www.reddit.com/comments/${token}`;
   }
-  if (/^[a-z0-9]{5,10}$/i.test(token)) {
-    return `https://www.reddit.com/comments/${token}`;
+
+  // Validate protocol to prevent SSRF
+  if (url && !isValidProtocol(url)) {
+    return null;
   }
-  return null;
+
+  return url;
 }
 
 function isRedditHost(hostname: string): boolean {
@@ -590,16 +612,17 @@ export async function executeVReddit(ctx: Context, input: string): Promise<void>
     }
 
     if (finalSize > maxVideoBytes) {
-      // Save the original uncompressed video to the workspace directory
+      // Save the original uncompressed video to a temp directory for later retrieval
+      // Uses OS temp directory rather than hardcoded paths
       const timestamp = Date.now();
-      const savedDir = path.join(os.homedir(), 'Workspace', 'vreddit-originals');
+      const savedDir = path.join(os.tmpdir(), 'claudegram-vreddit-originals');
       try {
         fs.mkdirSync(savedDir, { recursive: true });
         const savedPath = path.join(savedDir, `vreddit-${timestamp}.mp4`);
         fs.copyFileSync(finalPath, savedPath);
         console.log(`[vReddit] Saved original (${(finalSize / 1024 / 1024).toFixed(1)}MB) to ${savedPath}`);
       } catch (saveError) {
-        console.warn('[vReddit] Failed to save original to workspace:', saveError);
+        console.warn('[vReddit] Failed to save original to temp:', saveError);
       }
 
       // Stage 1: CRF-based compression (fast, good quality)
@@ -655,8 +678,8 @@ export async function executeVReddit(ctx: Context, input: string): Promise<void>
     if (ackMsg && ctx.chat?.id) {
       try {
         await ctx.api.deleteMessage(ctx.chat.id, ackMsg.message_id);
-      } catch {
-        // ignore delete errors
+      } catch (e) {
+        console.debug('[vReddit] Failed to delete ack message:', e instanceof Error ? e.message : e);
       }
     }
     if (tempDir) {

@@ -1,5 +1,5 @@
 import { Context } from 'grammy';
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { config } from '../../config.js';
@@ -42,6 +42,48 @@ function pickLargestPhoto(photoSizes: PhotoSize[]): PhotoSize {
   });
 }
 
+/**
+ * Download a file from a URL using curl with stdin config.
+ * Prevents token exposure in process args (visible via `ps aux`).
+ */
+function downloadFileSecure(fileUrl: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const curlArgs = [
+      '-sS', '-f',
+      '--connect-timeout', '10',
+      '--max-time', '30',
+      '--retry', '2',
+      '--retry-delay', '2',
+      '-o', destPath,
+      '-K', '-'  // Read config from stdin
+    ];
+
+    const child = spawn('curl', curlArgs, { timeout: 60_000 });
+    let stderr = '';
+
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to spawn curl: ${err.message}`));
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        const msg = stderr.trim() || `curl exited with code ${code}`;
+        reject(new Error(`Failed to download file: ${msg}`));
+      }
+    });
+
+    // Write URL via stdin config format to avoid process arg exposure
+    child.stdin.write(`url = "${fileUrl}"\n`);
+    child.stdin.end();
+  });
+}
+
 async function downloadTelegramFile(ctx: Context, fileId: string, destPath: string): Promise<string> {
   const file = await ctx.api.getFile(fileId);
   if (!file.file_path) {
@@ -50,30 +92,7 @@ async function downloadTelegramFile(ctx: Context, fileId: string, destPath: stri
 
   const fileUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-  await new Promise<void>((resolve, reject) => {
-    execFile(
-      'curl',
-      [
-        '-sS',
-        '-f',
-        '--connect-timeout', '10',
-        '--max-time', '30',
-        '--retry', '2',
-        '--retry-delay', '2',
-        '-o', destPath,
-        fileUrl,
-      ],
-      { timeout: 60_000 },
-      (error, _stdout, stderr) => {
-        if (error) {
-          const msg = (stderr || '').trim() || error.message;
-          reject(new Error(`Failed to download image: ${msg}`));
-          return;
-        }
-        resolve();
-      }
-    );
-  });
+  await downloadFileSecure(fileUrl, destPath);
 
   return file.file_path;
 }

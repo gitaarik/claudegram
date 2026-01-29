@@ -67,10 +67,15 @@ export function detectPlatform(url: string): Platform {
   return 'unknown';
 }
 
+/**
+ * Validate a URL for safe external fetching.
+ * Only allows http/https protocols to prevent SSRF attacks.
+ */
 export function isValidUrl(url: string): boolean {
   try {
-    new URL(url);
-    return true;
+    const parsed = new URL(url);
+    // Only allow http/https to prevent SSRF attacks (file://, ftp://, etc.)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
   } catch {
     return false;
   }
@@ -567,8 +572,8 @@ export function cleanupExtractResult(result: ExtractResult): void {
     const tempDir = result._tempDir;
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
+    } catch (e) {
+      console.warn(`[extract] Cleanup failed for ${tempDir}:`, e instanceof Error ? e.message : e);
     }
     return;
   }
@@ -582,8 +587,8 @@ export function cleanupExtractResult(result: ExtractResult): void {
         fs.rmSync(dir, { recursive: true, force: true });
         return;
       }
-    } catch {
-      // ignore cleanup errors
+    } catch (e) {
+      console.warn(`[extract] Cleanup failed for ${p}:`, e instanceof Error ? e.message : e);
     }
   }
 }

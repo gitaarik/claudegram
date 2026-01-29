@@ -544,6 +544,8 @@ function getProjectState(chatId: number): ProjectBrowserState {
       existing.current = root;
       existing.page = 0;
     }
+    // Refresh timestamp on access to keep active sessions alive
+    projectBrowserTimestamps.set(chatId, Date.now());
     return existing;
   }
 
@@ -559,6 +561,7 @@ function getProjectState(chatId: number): ProjectBrowserState {
     page: 0,
   };
   projectBrowserState.set(chatId, state);
+  projectBrowserTimestamps.set(chatId, Date.now());
   return state;
 }
 
@@ -1915,7 +1918,11 @@ export async function sendTranscriptResult(ctx: Context, transcript: string): Pr
         caption: `🎤 Transcript (${transcript.length} chars)`,
       });
     } finally {
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch (e) {
+        console.warn(`[transcribe] Cleanup failed for ${tmpPath}:`, e instanceof Error ? e.message : e);
+      }
     }
   }
 }
@@ -1954,7 +1961,11 @@ async function transcribeAndSend(
     const transcript = await transcribeFile(tempFilePath);
 
     // Remove ack
-    try { await ctx.api.deleteMessage(chatId, ackMsg.message_id); } catch { /* ignore */ }
+    try {
+      await ctx.api.deleteMessage(chatId, ackMsg.message_id);
+    } catch (e) {
+      console.debug('[Transcribe] Failed to delete ack message:', e instanceof Error ? e.message : e);
+    }
 
     await sendTranscriptResult(ctx, transcript);
   } catch (error) {
@@ -1967,7 +1978,11 @@ async function transcribeAndSend(
     }
   } finally {
     if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try { fs.unlinkSync(tempFilePath); } catch { /* ignore */ }
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {
+        console.warn(`[Transcribe] Cleanup failed for ${tempFilePath}:`, e instanceof Error ? e.message : e);
+      }
     }
   }
 }
@@ -2040,6 +2055,48 @@ export async function handleTranscribeDocument(ctx: Context): Promise<void> {
 // Store pending extract URLs keyed by chatId so the callback knows what to process
 const pendingExtractUrls = new Map<number, string>();
 
+// TTLs for cleanup (in ms)
+const EXTRACT_URL_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const PROJECT_BROWSER_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// Track timestamps for extract URLs and project browser
+const pendingExtractTimestamps = new Map<number, number>();
+const projectBrowserTimestamps = new Map<number, number>();
+
+/**
+ * Cleanup interval to prevent memory leaks from unbounded Maps.
+ * Runs every 60 seconds and removes stale entries.
+ */
+setInterval(() => {
+  const now = Date.now();
+
+  // Clean pendingMediumResults (already has expiresAt field)
+  for (const [chatId, entry] of pendingMediumResults.entries()) {
+    if (now > entry.expiresAt) {
+      pendingMediumResults.delete(chatId);
+      console.log(`[cleanup] Removed stale pendingMediumResults for chat ${chatId}`);
+    }
+  }
+
+  // Clean pendingExtractUrls
+  for (const [chatId, timestamp] of pendingExtractTimestamps.entries()) {
+    if (now - timestamp > EXTRACT_URL_TTL_MS) {
+      pendingExtractUrls.delete(chatId);
+      pendingExtractTimestamps.delete(chatId);
+      console.log(`[cleanup] Removed stale pendingExtractUrls for chat ${chatId}`);
+    }
+  }
+
+  // Clean projectBrowserState
+  for (const [chatId, timestamp] of projectBrowserTimestamps.entries()) {
+    if (now - timestamp > PROJECT_BROWSER_TTL_MS) {
+      projectBrowserState.delete(chatId);
+      projectBrowserTimestamps.delete(chatId);
+      console.log(`[cleanup] Removed stale projectBrowserState for chat ${chatId}`);
+    }
+  }
+}, 60_000);
+
 export async function handleExtract(ctx: Context): Promise<void> {
   const text = ctx.message?.text || '';
   const args = text.split(' ').slice(1).join(' ').trim();
@@ -2088,8 +2145,9 @@ export async function showExtractMenu(ctx: Context, url: string): Promise<void> 
 
   const label = platformLabel(platform);
 
-  // Store URL for callback
+  // Store URL for callback (with timestamp for cleanup)
   pendingExtractUrls.set(chatId, url);
+  pendingExtractTimestamps.set(chatId, Date.now());
 
   await ctx.reply(
     `\u{1F4E5} *Extract from ${esc(label)}*\n\n` +
@@ -2138,7 +2196,9 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
     try {
       const menuMsgId = ctx.callbackQuery?.message?.message_id;
       if (menuMsgId) await ctx.api.deleteMessage(chatId, menuMsgId);
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.debug('[extract] Failed to delete menu message:', e instanceof Error ? e.message : e);
+    }
 
     await executeExtract(ctx, url, 'text', subtitleFormat);
     return;
@@ -2210,7 +2270,9 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
     if (menuMsgId) {
       await ctx.api.deleteMessage(chatId, menuMsgId);
     }
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.debug('[extract] Failed to delete menu message:', e instanceof Error ? e.message : e);
+  }
 
   await executeExtract(ctx, url, mode);
 }
@@ -2224,7 +2286,10 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
   const updateAck = async (text: string) => {
     try {
       await ctx.api.editMessageText(chatId, ackMsg.message_id, text, { parse_mode: undefined });
-    } catch { /* ignore */ }
+    } catch (e) {
+      // Update can fail if message was deleted or content unchanged
+      console.debug('[extract] Failed to update ack message:', e instanceof Error ? e.message : e);
+    }
   };
 
   let result: ExtractResult | null = null;
@@ -2238,7 +2303,11 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
     });
 
     // Delete ack message
-    try { await ctx.api.deleteMessage(chatId, ackMsg.message_id); } catch { /* ignore */ }
+    try {
+      await ctx.api.deleteMessage(chatId, ackMsg.message_id);
+    } catch (e) {
+      console.debug('[extract] Failed to delete ack message:', e instanceof Error ? e.message : e);
+    }
 
     // Send results
     const platform = platformLabel(result.platform);
@@ -2310,7 +2379,11 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
             caption: `\u{1F4DD} Transcript (${result.transcript.length} chars)`,
           });
         } finally {
-          try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          try {
+            if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+          } catch (e) {
+            console.warn(`[extract] Cleanup failed for ${tmpPath}:`, e instanceof Error ? e.message : e);
+          }
         }
       }
     } else if ((mode === 'text' || mode === 'all') && !result.subtitlePath) {
