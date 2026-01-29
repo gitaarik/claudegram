@@ -23,7 +23,7 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((val) => val.toLowerCase() === 'true'),
-  CLAUDE_SDK_LOG_LEVEL: z.enum(['off', 'basic', 'verbose', 'trace']).default('verbose'),
+  CLAUDE_SDK_LOG_LEVEL: z.enum(['off', 'basic', 'verbose', 'trace']).default('basic'),
   CLAUDE_SDK_INCLUDE_PARTIAL: z
     .string()
     .default('false')
@@ -148,6 +148,10 @@ const envSchema = z.object({
   TERMINAL_UI_DEFAULT: z
     .string()
     .default('true')
+    .transform((val) => val.toLowerCase() === 'true'),
+  ALLOW_PRIVATE_NETWORK_URLS: z
+    .string()
+    .default('false')
     .transform((val) => val.toLowerCase() === 'true'),
 });
 

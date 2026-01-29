@@ -45,6 +45,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
+import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
 
 // Helper for consistent MarkdownV2 replies
 async function replyMd(ctx: Context, text: string): Promise<void> {
@@ -406,8 +407,7 @@ export async function handleProjectCallback(ctx: Context): Promise<void> {
 }
 
 function getProjectRoot(): string {
-  const root = config.WORKSPACE_DIR || process.env.HOME || process.cwd();
-  return path.resolve(root);
+  return getWorkspaceRoot();
 }
 
 function isWithinRoot(root: string, target: string): boolean {
@@ -577,14 +577,20 @@ export async function handleProject(ctx: Context): Promise<void> {
   }
 
   let projectPath: string;
+  const workspaceRoot = getWorkspaceRoot();
+
   if (args.startsWith('/') || args.startsWith('~')) {
     projectPath = args;
     if (projectPath.startsWith('~')) {
       projectPath = path.join(process.env.HOME || '', projectPath.slice(1));
     }
     projectPath = path.resolve(projectPath);
+    if (!isPathWithinRoot(workspaceRoot, projectPath)) {
+      await replyMd(ctx, `❌ Path must be within workspace root: \`${esc(workspaceRoot)}\``);
+      return;
+    }
   } else {
-    projectPath = path.join(config.WORKSPACE_DIR, args);
+    projectPath = path.join(workspaceRoot, args);
   }
 
   if (!fs.existsSync(projectPath)) {
@@ -1489,6 +1495,12 @@ export async function handleFile(ctx: Context): Promise<void> {
   const fullPath = filePath.startsWith('/')
     ? filePath
     : path.join(session.workingDirectory, filePath);
+  const workspaceRoot = getWorkspaceRoot();
+
+  if (!isPathWithinRoot(workspaceRoot, fullPath)) {
+    await replyMd(ctx, `❌ File path must be within workspace root: \`${esc(workspaceRoot)}\``);
+    return;
+  }
 
   if (!fs.existsSync(fullPath)) {
     await replyMd(ctx, `❌ File not found: \`${esc(filePath)}\``);
@@ -1544,6 +1556,12 @@ export async function handleTelegraph(ctx: Context): Promise<void> {
   const fullPath = filePath.startsWith('/')
     ? filePath
     : path.join(session.workingDirectory, filePath);
+  const workspaceRoot = getWorkspaceRoot();
+
+  if (!isPathWithinRoot(workspaceRoot, fullPath)) {
+    await replyMd(ctx, `❌ File path must be within workspace root: \`${esc(workspaceRoot)}\``);
+    return;
+  }
 
   if (!fs.existsSync(fullPath)) {
     await replyMd(ctx, `❌ File not found: \`${esc(filePath)}\``);

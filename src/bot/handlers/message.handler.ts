@@ -20,6 +20,7 @@ import { detectPlatform, isValidUrl } from '../../media/extract.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
 
 // Helper for MarkdownV2
 function esc(text: string): string {
@@ -265,6 +266,15 @@ async function handleProjectReply(ctx: Context, chatId: number, projectPath: str
 
   // Resolve to absolute path
   resolvedPath = path.resolve(resolvedPath);
+  const workspaceRoot = getWorkspaceRoot();
+
+  if (!isPathWithinRoot(workspaceRoot, resolvedPath)) {
+    await ctx.reply(
+      `❌ Path must be within workspace root: \`${esc(workspaceRoot)}\``,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
 
   // Check if exists
   if (!fs.existsSync(resolvedPath)) {
@@ -311,6 +321,15 @@ async function handleFileReply(ctx: Context, chatId: number, filePath: string): 
   const fullPath = trimmedPath.startsWith('/')
     ? trimmedPath
     : path.join(session.workingDirectory, trimmedPath);
+  const workspaceRoot = getWorkspaceRoot();
+
+  if (!isPathWithinRoot(workspaceRoot, fullPath)) {
+    await ctx.reply(
+      `❌ File path must be within workspace root: \`${esc(workspaceRoot)}\``,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
 
   if (!fs.existsSync(fullPath)) {
     await ctx.reply(
@@ -430,6 +449,15 @@ async function handleTelegraphReply(ctx: Context, chatId: number, filePath: stri
   const fullPath = trimmedPath.startsWith('/')
     ? trimmedPath
     : path.join(session.workingDirectory, trimmedPath);
+  const workspaceRoot = getWorkspaceRoot();
+
+  if (!isPathWithinRoot(workspaceRoot, fullPath)) {
+    await ctx.reply(
+      `❌ File path must be within workspace root: \`${esc(workspaceRoot)}\``,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
 
   if (!fs.existsSync(fullPath)) {
     await ctx.reply(
