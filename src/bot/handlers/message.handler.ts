@@ -27,6 +27,10 @@ function esc(text: string): string {
   return escapeMarkdownV2(text);
 }
 
+async function replyFeatureDisabled(ctx: Context, feature: string): Promise<void> {
+  await ctx.reply(`⚠️ ${feature} feature is disabled in configuration.`, { parse_mode: undefined });
+}
+
 function extractRedditUrl(text: string): string | null {
   const matches = text.match(/https?:\/\/\S+/gi);
   if (!matches) return null;
@@ -102,6 +106,8 @@ async function sendSessionInitNotification(
 }
 
 function getAutoVRedditUrl(text: string): string | null {
+  if (!config.VREDDIT_ENABLED) return null;
+
   const trimmed = text.trim();
   if (!trimmed || trimmed.startsWith('/')) return null;
 
@@ -179,24 +185,40 @@ export async function handleMessage(ctx: Context): Promise<void> {
 
     // Handle reddit fetch reply
     if (replyText.includes('Reddit Fetch') || replyText.includes('Reddit target')) {
+      if (!config.REDDIT_ENABLED) {
+        await replyFeatureDisabled(ctx, 'Reddit');
+        return;
+      }
       await executeRedditFetch(ctx, text.trim());
       return;
     }
 
     // Handle Reddit video fetch reply
     if (replyText.includes('Reddit Video')) {
+      if (!config.VREDDIT_ENABLED) {
+        await replyFeatureDisabled(ctx, 'Reddit video');
+        return;
+      }
       await executeVReddit(ctx, text.trim());
       return;
     }
 
     // Handle medium fetch reply
     if (replyText.includes('Medium Fetch') || replyText.includes('Medium article')) {
+      if (!config.MEDIUM_ENABLED) {
+        await replyFeatureDisabled(ctx, 'Medium');
+        return;
+      }
       await executeMediumFetch(ctx, text.trim());
       return;
     }
 
     // Handle extract media reply
     if (replyText.includes('Extract Media') || replyText.includes('Paste a URL')) {
+      if (!config.EXTRACT_ENABLED) {
+        await replyFeatureDisabled(ctx, 'Extract');
+        return;
+      }
       await showExtractMenu(ctx, text.trim());
       return;
     }
@@ -210,7 +232,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
 
   // Auto-detect YouTube / TikTok / Instagram URLs sent as bare links → show extract menu
   const trimmedText = text.trim();
-  if (isValidUrl(trimmedText) && detectPlatform(trimmedText) !== 'unknown') {
+  if (config.EXTRACT_ENABLED && isValidUrl(trimmedText) && detectPlatform(trimmedText) !== 'unknown') {
     await showExtractMenu(ctx, trimmedText);
     return;
   }
