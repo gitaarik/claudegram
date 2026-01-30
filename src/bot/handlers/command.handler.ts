@@ -1484,7 +1484,7 @@ export async function handleTeleport(ctx: Context): Promise<void> {
   }
 
   const projectName = path.basename(session.workingDirectory);
-  const claudeBin = config.CLAUDE_EXECUTABLE_PATH || 'claude';
+  const claudeBin = config.CLAUDE_EXECUTABLE_PATH ?? 'claude';
   const command = `cd "${session.workingDirectory}" && ${claudeBin} --resume ${session.claudeSessionId}`;
 
   const message = `🚀 *Teleport to Terminal*
@@ -2455,7 +2455,8 @@ const projectBrowserTimestamps = new Map<number, number>();
  * Cleanup interval to prevent memory leaks from unbounded Maps.
  * Runs every 60 seconds and removes stale entries.
  */
-setInterval(() => {
+// Interval assigned to call .unref() for graceful shutdown
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
 
   // Clean pendingMediumResults (already has expiresAt field)
@@ -2484,6 +2485,7 @@ setInterval(() => {
     }
   }
 }, 60_000);
+cleanupInterval.unref();
 
 export async function handleExtract(ctx: Context): Promise<void> {
   if (!config.EXTRACT_ENABLED) {
