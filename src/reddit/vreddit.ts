@@ -12,6 +12,13 @@ const VIDEO_DOWNLOAD_TIMEOUT_SEC = 120;
 const FFMPEG_TIMEOUT_MS = 120000;
 const FFMPEG_COMPRESS_TIMEOUT_MS = 300000; // 5 min for compression
 
+/** Conditional debug logging - only logs when LOG_AGENT_HOOKS is enabled */
+function debugLog(message: string): void {
+  if (config.LOG_AGENT_HOOKS) {
+    console.log(message);
+  }
+}
+
 type VideoSource =
   | { type: 'dash'; url: string }
   | { type: 'external'; url: string }
@@ -480,24 +487,24 @@ function getUrlExtension(urlString: string, fallback: string): string {
 
 async function resolveVideoSource(input: string): Promise<VideoSource> {
   const token = normalizeInput(input);
-  console.log(`[vReddit] Input: "${input}" → token: "${token}"`);
+  debugLog(`[vReddit] Input: "${input}" → token: "${token}"`);
   if (!token) return null;
 
   if (token.includes('DASHPlaylist.mpd')) {
     const url = ensureUrl(token);
-    console.log(`[vReddit] Direct DASH URL: ${url}`);
+    debugLog(`[vReddit] Direct DASH URL: ${url}`);
     if (url && !(await isUrlAllowed(url))) {
-      console.log('[vReddit] Blocked DASH URL (private network)');
+      debugLog('[vReddit] Blocked DASH URL (private network)');
       return null;
     }
     return url ? { type: 'dash', url } : null;
   }
 
   const candidateUrl = ensureUrl(token);
-  console.log(`[vReddit] Candidate URL: ${candidateUrl}`);
+  debugLog(`[vReddit] Candidate URL: ${candidateUrl}`);
   if (!candidateUrl) return null;
   if (!(await isUrlAllowed(candidateUrl))) {
-    console.log('[vReddit] Blocked URL (private network)');
+    debugLog('[vReddit] Blocked URL (private network)');
     return null;
   }
 
@@ -505,26 +512,26 @@ async function resolveVideoSource(input: string): Promise<VideoSource> {
   try {
     parsed = new URL(candidateUrl);
   } catch {
-    console.log('[vReddit] Failed to parse URL');
+    debugLog('[vReddit] Failed to parse URL');
     return null;
   }
 
   if (parsed.hostname === 'v.redd.it') {
     const id = extractVRedditIdFromUrl(parsed);
-    console.log(`[vReddit] v.redd.it ID: ${id}`);
+    debugLog(`[vReddit] v.redd.it ID: ${id}`);
     return id ? { type: 'dash', url: dashUrlFromId(id) } : null;
   }
 
   if (!isRedditHost(parsed.hostname)) {
-    console.log(`[vReddit] Not a Reddit host: ${parsed.hostname}`);
+    debugLog(`[vReddit] Not a Reddit host: ${parsed.hostname}`);
     return null;
   }
 
-  console.log(`[vReddit] Resolving final URL from: ${parsed.toString()}`);
+  debugLog(`[vReddit] Resolving final URL from: ${parsed.toString()}`);
   const finalUrl = await resolveFinalUrl(parsed.toString());
-  console.log(`[vReddit] Final URL: ${finalUrl}`);
+  debugLog(`[vReddit] Final URL: ${finalUrl}`);
   if (!(await isUrlAllowed(finalUrl))) {
-    console.log('[vReddit] Blocked final URL (private network)');
+    debugLog('[vReddit] Blocked final URL (private network)');
     return null;
   }
 
@@ -532,12 +539,12 @@ async function resolveVideoSource(input: string): Promise<VideoSource> {
   try {
     finalParsed = new URL(finalUrl);
   } catch {
-    console.log('[vReddit] Failed to parse final URL');
+    debugLog('[vReddit] Failed to parse final URL');
     return null;
   }
 
   if (!isRedditHost(finalParsed.hostname)) {
-    console.log(`[vReddit] Final URL not Reddit host: ${finalParsed.hostname}`);
+    debugLog(`[vReddit] Final URL not Reddit host: ${finalParsed.hostname}`);
     return null;
   }
 
@@ -547,15 +554,15 @@ async function resolveVideoSource(input: string): Promise<VideoSource> {
     finalParsed.hostname = 'old.reddit.com';
   }
 
-  console.log(`[vReddit] Fetching HTML from: ${finalParsed.toString()}`);
+  debugLog(`[vReddit] Fetching HTML from: ${finalParsed.toString()}`);
   const html = await fetchHtml(finalParsed.toString());
-  console.log(`[vReddit] HTML length: ${html.length} chars`);
+  debugLog(`[vReddit] HTML length: ${html.length} chars`);
 
   const dashUrl = extractDashUrlFromHtml(html);
   if (dashUrl) {
-    console.log(`[vReddit] Extracted DASH URL: ${dashUrl}`);
+    debugLog(`[vReddit] Extracted DASH URL: ${dashUrl}`);
     if (!(await isUrlAllowed(dashUrl))) {
-      console.log('[vReddit] Blocked DASH URL (private network)');
+      debugLog('[vReddit] Blocked DASH URL (private network)');
       return null;
     }
     return { type: 'dash', url: dashUrl };
@@ -564,15 +571,15 @@ async function resolveVideoSource(input: string): Promise<VideoSource> {
   // Fallback: check for external video embed (e.g. redgifs.com)
   const externalUrl = extractExternalUrlFromHtml(html);
   if (externalUrl) {
-    console.log(`[vReddit] Found external video embed: ${externalUrl}`);
+    debugLog(`[vReddit] Found external video embed: ${externalUrl}`);
     if (!(await isUrlAllowed(externalUrl))) {
-      console.log('[vReddit] Blocked external URL (private network)');
+      debugLog('[vReddit] Blocked external URL (private network)');
       return null;
     }
     return { type: 'external', url: externalUrl };
   }
 
-  console.log('[vReddit] No video source found in HTML');
+  debugLog('[vReddit] No video source found in HTML');
   return null;
 }
 
@@ -597,21 +604,21 @@ export async function executeVReddit(ctx: Context, input: string): Promise<void>
 
     if (source.type === 'dash') {
       // === DASH pipeline (Reddit-hosted video) ===
-      console.log(`[vReddit] Parsing DASH manifest: ${source.url}`);
+      debugLog(`[vReddit] Parsing DASH manifest: ${source.url}`);
       const streams = await parseDashManifest(source.url);
       if (!streams?.videoUrl) {
-        console.log('[vReddit] No video stream found in DASH manifest');
+        debugLog('[vReddit] No video stream found in DASH manifest');
         await replyMd(ctx, '❌ Failed to locate a downloadable video stream\\.');
         return;
       }
-      console.log(`[vReddit] Video stream: ${streams.videoUrl}`);
-      if (streams.audioUrl) console.log(`[vReddit] Audio stream: ${streams.audioUrl}`);
+      debugLog(`[vReddit] Video stream: ${streams.videoUrl}`);
+      if (streams.audioUrl) debugLog(`[vReddit] Audio stream: ${streams.audioUrl}`);
 
       const videoExt = getUrlExtension(streams.videoUrl, '.mp4');
       const videoPath = path.join(tempDir, `video${videoExt}`);
-      console.log('[vReddit] Downloading video stream...');
+      debugLog('[vReddit] Downloading video stream...');
       const videoSize = await downloadFile(streams.videoUrl, videoPath, VIDEO_DOWNLOAD_TIMEOUT_SEC);
-      console.log(`[vReddit] Video downloaded: ${(videoSize / 1024 / 1024).toFixed(1)}MB`);
+      debugLog(`[vReddit] Video downloaded: ${(videoSize / 1024 / 1024).toFixed(1)}MB`);
 
       finalPath = videoPath;
       finalSize = videoSize;
@@ -619,7 +626,7 @@ export async function executeVReddit(ctx: Context, input: string): Promise<void>
       if (streams.audioUrl) {
         const audioExt = getUrlExtension(streams.audioUrl, '.mp4');
         const audioPath = path.join(tempDir, `audio${audioExt}`);
-        console.log('[vReddit] Downloading audio stream...');
+        debugLog('[vReddit] Downloading audio stream...');
         await downloadFile(streams.audioUrl, audioPath, VIDEO_DOWNLOAD_TIMEOUT_SEC);
 
         const mergedPath = path.join(tempDir, 'video_merged.mp4');
@@ -663,7 +670,7 @@ export async function executeVReddit(ctx: Context, input: string): Promise<void>
       const timestamp = Date.now();
       const savedDir = path.join(os.tmpdir(), 'claudegram-vreddit-originals');
       try {
-        fs.mkdirSync(savedDir, { recursive: true });
+        fs.mkdirSync(savedDir, { recursive: true, mode: 0o700 });
         const savedPath = path.join(savedDir, `vreddit-${timestamp}.mp4`);
         fs.copyFileSync(finalPath, savedPath);
         console.log(`[vReddit] Saved original (${(finalSize / 1024 / 1024).toFixed(1)}MB) to ${savedPath}`);

@@ -661,7 +661,7 @@ export async function handleNewProject(ctx: Context): Promise<void> {
     return;
   }
 
-  fs.mkdirSync(projectPath, { recursive: true });
+  fs.mkdirSync(projectPath, { recursive: true, mode: 0o700 });
   sessionManager.setWorkingDirectory(chatId, projectPath);
   clearConversation(chatId);
 
@@ -1782,7 +1782,7 @@ function ensureRedditOutputDir(ctx: Context): string {
   const session = chatId ? sessionManager.getSession(chatId) : null;
   const baseDir = session ? session.workingDirectory : process.cwd();
   const dir = path.join(baseDir, '.claudegram', 'reddit');
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -1805,7 +1805,7 @@ function ensureMediumOutputDir(ctx: Context, url: string): string {
   const baseDir = session ? session.workingDirectory : process.cwd();
   const slug = slugFromUrl(url);
   const dir = path.join(baseDir, '.claudegram', 'medium', slug);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -1977,7 +1977,7 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
       if (!format && output.length > config.REDDITFETCH_JSON_THRESHOLD_CHARS) {
         try {
           const outputPath = buildRedditOutputPath(ctx, targets);
-          fs.writeFileSync(outputPath, jsonOutput, 'utf-8');
+          fs.writeFileSync(outputPath, jsonOutput, { encoding: 'utf-8', mode: 0o600 });
 
           const sent = await messageSender.sendDocument(
             ctx,
@@ -2015,7 +2015,7 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
         const slug = (targets[0] || 'reddit').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 40);
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const mdPath = path.join(dir, `reddit_${slug}_${stamp}.md`);
-        fs.writeFileSync(mdPath, output, 'utf-8');
+        fs.writeFileSync(mdPath, output, { encoding: 'utf-8', mode: 0o600 });
 
         // 2. Build prompt with inline content (truncated for large results)
         const CHAT_INLINE_LIMIT = 3000;
@@ -2220,7 +2220,7 @@ export async function handleMediumCallback(ctx: Context): Promise<void> {
       const outputDir = ensureMediumOutputDir(ctx, article.url);
       const slug = slugFromUrl(article.url);
       mdPath = path.join(outputDir, `${slug}.md`);
-      fs.writeFileSync(mdPath, article.markdown, 'utf-8');
+      fs.writeFileSync(mdPath, article.markdown, { encoding: 'utf-8', mode: 0o600 });
     }
 
     // Build result message
@@ -2365,7 +2365,7 @@ export async function sendTranscriptResult(ctx: Context, transcript: string): Pr
   } else {
     const tmpPath = path.join(os.tmpdir(), `claudegram_transcript_${Date.now()}.txt`);
     try {
-      fs.writeFileSync(tmpPath, transcript, 'utf-8');
+      fs.writeFileSync(tmpPath, transcript, { encoding: 'utf-8', mode: 0o600 });
       const inputFile = new InputFile(fs.readFileSync(tmpPath), 'transcript.txt');
       await ctx.replyWithDocument(inputFile, {
         caption: `🎤 Transcript (${transcript.length} chars)`,
@@ -2871,7 +2871,7 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
         // Send as .txt file
         const tmpPath = path.join(os.tmpdir(), `extract_transcript_${Date.now()}.txt`);
         try {
-          fs.writeFileSync(tmpPath, result.transcript, 'utf-8');
+          fs.writeFileSync(tmpPath, result.transcript, { encoding: 'utf-8', mode: 0o600 });
           const inputFile = new InputFile(fs.readFileSync(tmpPath), `${title.replace(/[^a-zA-Z0-9]/g, '_')}_transcript.txt`);
           await ctx.replyWithDocument(inputFile, {
             caption: `\u{1F4DD} Transcript (${result.transcript.length} chars)`,

@@ -161,14 +161,14 @@ async function concatAndConvertAudio(wavBuffers: Buffer[]): Promise<Buffer> {
     const chunkPaths: string[] = [];
     for (let i = 0; i < wavBuffers.length; i++) {
       const chunkPath = path.join(tmpDir, `chunk_${String(i).padStart(3, '0')}.wav`);
-      fs.writeFileSync(chunkPath, wavBuffers[i]);
+      fs.writeFileSync(chunkPath, wavBuffers[i], { mode: 0o600 });
       chunkPaths.push(chunkPath);
     }
 
     // Write concat list
     const concatListPath = path.join(tmpDir, 'concat.txt');
     const concatContent = chunkPaths.map((p) => `file '${p}'`).join('\n');
-    fs.writeFileSync(concatListPath, concatContent);
+    fs.writeFileSync(concatListPath, concatContent, { mode: 0o600 });
 
     // Run ffmpeg
     const outputPath = path.join(tmpDir, 'output.ogg');
@@ -202,7 +202,7 @@ async function convertWavToOgg(wavBuffer: Buffer): Promise<Buffer> {
   try {
     const inputPath = path.join(tmpDir, 'input.wav');
     const outputPath = path.join(tmpDir, 'output.ogg');
-    fs.writeFileSync(inputPath, wavBuffer);
+    fs.writeFileSync(inputPath, wavBuffer, { mode: 0o600 });
 
     await runFfmpeg([
       '-y',

@@ -39,7 +39,7 @@ class SessionHistory {
 
   private ensureDirectory(): void {
     if (!fs.existsSync(HISTORY_DIR)) {
-      fs.mkdirSync(HISTORY_DIR, { recursive: true });
+      fs.mkdirSync(HISTORY_DIR, { recursive: true, mode: 0o700 });
     }
   }
 

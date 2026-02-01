@@ -28,7 +28,7 @@ const chatTTSSettings: Map<number, TTSSettings> = new Map();
 
 function ensureDirectory(): void {
   if (!fs.existsSync(SETTINGS_DIR)) {
-    fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -98,7 +98,7 @@ function saveSettings(): void {
   }
 
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ settings }, null, 2));
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ settings }, null, 2), { mode: 0o600 });
   } catch (error) {
     console.error('[TTS] Failed to save settings:', error);
   }

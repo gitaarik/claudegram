@@ -28,7 +28,7 @@ function sanitizeFileName(name: string): string {
 
 function ensureUploadsDir(projectDir: string): string {
   const dir = path.join(projectDir, UPLOADS_DIR);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 

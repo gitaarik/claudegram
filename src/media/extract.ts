@@ -406,7 +406,7 @@ async function transcribeAudioFile(
 
   if (fileSizeMB > MAX_GROQ_FILE_SIZE_MB) {
     const chunkDir = path.join(path.dirname(filePath), 'chunks');
-    fs.mkdirSync(chunkDir, { recursive: true });
+    fs.mkdirSync(chunkDir, { recursive: true, mode: 0o700 });
 
     const chunks = await chunkAudio(filePath, chunkDir, CHUNK_DURATION_SEC);
     const transcripts: string[] = [];
