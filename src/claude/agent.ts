@@ -12,6 +12,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import { sessionManager } from './session-manager.js';
+import { setActiveQuery, clearActiveQuery } from './request-queue.js';
 import { config } from '../config.js';
 
 export interface AgentUsage {
@@ -402,10 +403,13 @@ export async function sendToAgent(
       },
     };
 
-    const response = await query({
+    const response = query({
       prompt,
       options: queryOptions,
     });
+
+    // Store the Query object so /cancel can call interrupt()
+    setActiveQuery(chatId, response);
 
     // Process response messages
     for await (const responseMessage of response) {
@@ -519,7 +523,7 @@ export async function sendToAgent(
       }
     }
   } catch (error) {
-    // If aborted, return cancellation message
+    // If aborted/interrupted, return cancellation message
     if (abortController?.signal.aborted) {
       return {
         text: '🛑 Request cancelled.',
@@ -535,6 +539,8 @@ export async function sendToAgent(
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Claude error: ${errorMessage}`);
     }
+  } finally {
+    clearActiveQuery(chatId);
   }
 
   // Add assistant response to history
