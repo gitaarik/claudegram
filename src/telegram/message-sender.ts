@@ -1,4 +1,4 @@
-import { Context, Api, InputFile } from 'grammy';
+import { Context, Api, InputFile, GrammyError } from 'grammy';
 import { config } from '../config.js';
 import { processMessageForTelegram, convertToTelegramMarkdown, escapeMarkdownV2, splitMessage } from './markdown.js';
 import { shouldUseTelegraph, createTelegraphPage, createTelegraphFromFile } from './telegraph.js';
@@ -31,6 +31,7 @@ interface StreamState {
   spinnerInterval: NodeJS.Timeout | null;
   currentOperation: ToolOperation | null;
   backgroundTasks: Array<{ name: string; status: 'running' | 'complete' | 'error' }>;
+  rateLimitedUntil: number;
 }
 
 const TYPING_INTERVAL_MS = 4000; // Send typing every 4 seconds
@@ -185,6 +186,7 @@ export class MessageSender {
       spinnerInterval: null,
       currentOperation: null,
       backgroundTasks: [],
+      rateLimitedUntil: 0,
     };
 
     // Start spinner animation if terminal mode
@@ -282,8 +284,14 @@ export class MessageSender {
       return;
     }
 
+    // Respect Telegram's retry_after backoff on 429
+    const now = Date.now();
+    if (now < state.rateLimitedUntil) {
+      return;
+    }
+
     // Throttle edits to avoid rate limits
-    const timeSinceLastUpdate = Date.now() - state.lastUpdate;
+    const timeSinceLastUpdate = now - state.lastUpdate;
     if (timeSinceLastUpdate < MIN_EDIT_INTERVAL_MS) {
       return;
     }
@@ -339,6 +347,12 @@ export class MessageSender {
       );
       state.lastUpdate = Date.now();
     } catch (error: unknown) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters.retry_after ?? 60;
+        state.rateLimitedUntil = Date.now() + retryAfter * 1000;
+        console.warn(`[Terminal] Rate limited, backing off for ${retryAfter}s (chat:${state.chatId})`);
+        return;
+      }
       // Ignore "message not modified" and "message ID invalid" errors
       // The latter happens when streaming ends and message is replaced
       if (error instanceof Error) {
@@ -393,6 +407,11 @@ export class MessageSender {
   private async flushUpdate(ctx: Context, state: StreamState): Promise<void> {
     if (!state.messageId) return;
 
+    // Respect Telegram's retry_after backoff on 429
+    if (Date.now() < state.rateLimitedUntil) {
+      return;
+    }
+
     // Use terminal-style update if enabled
     if (state.terminalMode) {
       await this.flushTerminalUpdate(ctx, state);
@@ -414,6 +433,12 @@ export class MessageSender {
       );
       state.lastUpdate = Date.now();
     } catch (error: unknown) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters.retry_after ?? 60;
+        state.rateLimitedUntil = Date.now() + retryAfter * 1000;
+        console.warn(`[Stream] Rate limited, backing off for ${retryAfter}s (chat:${state.chatId})`);
+        return;
+      }
       // Ignore "message not modified" and "message ID invalid" errors
       if (error instanceof Error) {
         const msg = error.message.toLowerCase();
