@@ -1,13 +1,13 @@
 # Claudegram Development Guidelines
 
-## Website Maintenance
+## Website Maintenance (MANDATORY)
 
-When making changes to the codebase, keep `docs/index.html` updated:
+**ALWAYS update `docs/index.html` when adding features, commands, or contributors.** This is a required step in every PR that changes functionality. Do not commit feature/command changes without the corresponding website update.
 
 ### New Features
-When adding a new feature, add a feature card to the features section:
+Add a feature card to the features grid. Use the `data-category` attribute for tab filtering (valid values: `core`, `voice`, `media`, `session`):
 ```html
-<div class="feature-card">
+<div class="feature-card" data-category="core">
   <div class="feature-icon">[emoji]</div>
   <h3>Feature Name</h3>
   <p>Brief description of what the feature does.</p>
@@ -15,7 +15,7 @@ When adding a new feature, add a feature card to the features section:
 ```
 
 ### New Commands
-When adding a new bot command, add it to the commands section:
+Add a command row to the appropriate category section in the commands grid:
 ```html
 <div class="command-row">
   <code class="command-code">/command &lt;args&gt;</code>
@@ -24,7 +24,7 @@ When adding a new bot command, add it to the commands section:
 ```
 
 ### New Contributors
-When a new contributor makes significant contributions, add them to the contributors section:
+When a new contributor makes significant contributions (check `git shortlog -sn`), add them to the contributors section:
 ```html
 <a href="https://github.com/username" class="contributor-card" target="_blank">
   <img src="https://github.com/username.png" alt="username" class="contributor-avatar">
@@ -32,6 +32,12 @@ When a new contributor makes significant contributions, add them to the contribu
   <span class="contributor-role">Contributor</span>
 </a>
 ```
+
+### Pre-commit Check
+Before committing, verify that `docs/index.html` reflects ALL:
+- Feature cards for every user-facing feature
+- Command rows for every bot command in `src/bot/handlers/command.handler.ts`
+- Contributor cards for every contributor with 3+ commits
 
 ## Code Style
 

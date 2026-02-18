@@ -1,6 +1,6 @@
 import { Context, Api, InputFile, GrammyError } from 'grammy';
 import { config } from '../config.js';
-import { processMessageForTelegram, convertToTelegramMarkdown, escapeMarkdownV2, splitMessage } from './markdown.js';
+import { processMessageForTelegram, escapeMarkdownV2, splitMessage } from './markdown.js';
 import { shouldUseTelegraph, createTelegraphPage, createTelegraphFromFile } from './telegraph.js';
 import { isTerminalUIEnabled } from './terminal-settings.js';
 import {
@@ -35,8 +35,7 @@ interface StreamState {
 }
 
 const TYPING_INTERVAL_MS = 4000; // Send typing every 4 seconds
-const SPINNER_INTERVAL_MS = 2000; // Spinner animation speed (Telegram rate-limits edits to ~1/sec)
-const MIN_EDIT_INTERVAL_MS = 1500; // Minimum time between message edits to avoid rate limits
+const MIN_EDIT_INTERVAL_MS = 10000; // Minimum time between message edits (~5 edits/min safe zone)
 
 export class MessageSender {
   private streamStates: Map<number, StreamState> = new Map();
@@ -167,7 +166,7 @@ export class MessageSender {
     if (!chatId) return;
 
     const terminalMode = isTerminalUIEnabled(chatId);
-    const initialText = terminalMode ? `${getSpinnerFrame(0)} ${TOOL_ICONS.thinking} Thinking...` : '▌';
+    const initialText = `${getSpinnerFrame(0)} ${TOOL_ICONS.thinking} Processing...`;
     const message = await ctx.reply(initialText, { parse_mode: undefined });
 
     // Start continuous typing indicator
@@ -189,33 +188,7 @@ export class MessageSender {
       rateLimitedUntil: 0,
     };
 
-    // Start spinner animation if terminal mode
-    if (terminalMode) {
-      state.spinnerInterval = this.startSpinnerAnimation(ctx, chatId, state);
-    }
-
     this.streamStates.set(chatId, state);
-  }
-
-  private startSpinnerAnimation(ctx: Context, chatId: number, state: StreamState): NodeJS.Timeout {
-    return setInterval(() => {
-      // Check if state is still active (not cleaned up)
-      const currentState = this.streamStates.get(chatId);
-      if (!currentState || currentState !== state || !state.messageId) {
-        // State was cleaned up, stop the interval
-        if (state.spinnerInterval) {
-          clearInterval(state.spinnerInterval);
-          state.spinnerInterval = null;
-        }
-        return;
-      }
-
-      state.spinnerIndex = state.spinnerIndex + 1;
-      // Trigger a display update if we have a current operation
-      if (state.currentOperation || state.backgroundTasks.length > 0) {
-        this.flushTerminalUpdate(ctx, state).catch(() => {});
-      }
-    }, SPINNER_INTERVAL_MS);
   }
 
   private stopSpinnerAnimation(state: StreamState): void {
@@ -225,7 +198,7 @@ export class MessageSender {
     }
   }
 
-  private startTypingIndicator(api: Api, chatId: number): NodeJS.Timeout {
+  startTypingIndicator(api: Api, chatId: number): NodeJS.Timeout {
     // Send typing immediately
     api.sendChatAction(chatId, 'typing').catch(() => {});
 
@@ -242,15 +215,25 @@ export class MessageSender {
     }
   }
 
+  stopTypingInterval(interval: NodeJS.Timeout): void {
+    clearInterval(interval);
+  }
+
   /**
-   * Update the current tool operation (terminal UI mode)
+   * Update the current tool operation (terminal UI mode).
+   * Event-driven: triggers a status message edit on each tool change.
    */
-  updateToolOperation(chatId: number, toolName: string, input?: Record<string, unknown>): void {
+  updateToolOperation(chatId: number, toolName: string, input?: Record<string, unknown>, ctx?: Context): void {
     const state = this.streamStates.get(chatId);
     if (!state || !state.terminalMode) return;
 
     const detail = input ? extractToolDetail(toolName, input) : undefined;
     state.currentOperation = { name: toolName, detail };
+    state.spinnerIndex += 1;
+
+    if (ctx) {
+      this.flushTerminalUpdate(ctx, state).catch(() => {});
+    }
   }
 
   /**
@@ -304,17 +287,6 @@ export class MessageSender {
       const action = this.getToolAction(state.currentOperation.name);
       const detail = state.currentOperation.detail ? ` ${state.currentOperation.detail}` : '';
       parts.push(renderStatusLine(state.spinnerIndex, icon, action, detail ? detail.trim() : undefined));
-      if (state.content) parts.push('');
-    }
-
-    // Add content (truncated)
-    if (state.content) {
-      const TERMINAL_STATUS_RESERVE_CHARS = 200;
-      const maxContentLen = config.MAX_MESSAGE_LENGTH - TERMINAL_STATUS_RESERVE_CHARS;
-      const truncatedContent = state.content.length > maxContentLen
-        ? state.content.substring(0, maxContentLen) + '...'
-        : state.content;
-      parts.push(truncatedContent);
     }
 
     // Add background tasks (cap display to prevent exceeding Telegram's 4096-char limit)
@@ -322,7 +294,7 @@ export class MessageSender {
     const finishedTasks = state.backgroundTasks.filter(t => t.status === 'complete' || t.status === 'error');
     const displayTasks = [...activeTasks, ...finishedTasks.slice(-3)].slice(0, 8);
     if (displayTasks.length > 0) {
-      if (state.content || state.currentOperation) parts.push('');
+      if (state.currentOperation) parts.push('');
       for (const task of displayTasks) {
         const statusIcon = task.status === 'complete' ? TOOL_ICONS.complete
           : task.status === 'error' ? TOOL_ICONS.error
@@ -380,73 +352,18 @@ export class MessageSender {
     return actions[toolName] || toolName;
   }
 
-  async updateStream(ctx: Context, content: string): Promise<void> {
-    const chatId = ctx.chat?.id;
+  /**
+   * Accumulate streamed text content internally without triggering Telegram edits.
+   * The full content is only displayed when finishStreaming() is called.
+   */
+  updateStream(_ctx: Context, content: string): void {
+    const chatId = _ctx.chat?.id;
     if (!chatId) return;
 
     const state = this.streamStates.get(chatId);
     if (!state || !state.messageId) return;
 
     state.content = content;
-
-    if (state.updateScheduled) return;
-
-    const timeSinceLastUpdate = Date.now() - state.lastUpdate;
-
-    if (timeSinceLastUpdate >= config.STREAMING_DEBOUNCE_MS) {
-      await this.flushUpdate(ctx, state);
-    } else {
-      state.updateScheduled = true;
-      setTimeout(async () => {
-        state.updateScheduled = false;
-        await this.flushUpdate(ctx, state);
-      }, config.STREAMING_DEBOUNCE_MS - timeSinceLastUpdate);
-    }
-  }
-
-  private async flushUpdate(ctx: Context, state: StreamState): Promise<void> {
-    if (!state.messageId) return;
-
-    // Respect Telegram's retry_after backoff on 429
-    if (Date.now() < state.rateLimitedUntil) {
-      return;
-    }
-
-    // Use terminal-style update if enabled
-    if (state.terminalMode) {
-      await this.flushTerminalUpdate(ctx, state);
-      return;
-    }
-
-    // For streaming updates, keep it simple - just show truncated content with cursor
-    // Don't convert to MarkdownV2 during streaming to avoid parsing errors mid-message
-    const displayContent = state.content.length > 0
-      ? state.content.substring(0, config.MAX_MESSAGE_LENGTH - 10) + ' ▌'
-      : '▌';
-
-    try {
-      await ctx.api.editMessageText(
-        state.chatId,
-        state.messageId,
-        displayContent,
-        { parse_mode: undefined } // Plain text during streaming for stability
-      );
-      state.lastUpdate = Date.now();
-    } catch (error: unknown) {
-      if (error instanceof GrammyError && error.error_code === 429) {
-        const retryAfter = error.parameters.retry_after ?? 60;
-        state.rateLimitedUntil = Date.now() + retryAfter * 1000;
-        console.warn(`[Stream] Rate limited, backing off for ${retryAfter}s (chat:${state.chatId})`);
-        return;
-      }
-      // Ignore "message not modified" and "message ID invalid" errors
-      if (error instanceof Error) {
-        const msg = error.message.toLowerCase();
-        if (!msg.includes('message is not modified') && !msg.includes('message_id_invalid')) {
-          console.error('Error updating stream:', error);
-        }
-      }
-    }
   }
 
   async finishStreaming(ctx: Context, finalContent: string): Promise<void> {

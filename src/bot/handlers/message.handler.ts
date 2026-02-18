@@ -452,7 +452,7 @@ async function handleAgentReply(
               messageSender.updateStream(ctx, progressText);
             },
             onToolStart: (toolName, input) => {
-              messageSender.updateToolOperation(chatId, toolName, input);
+              messageSender.updateToolOperation(chatId, toolName, input, ctx);
             },
             onToolEnd: () => {
               messageSender.clearToolOperation(chatId);
@@ -565,7 +565,7 @@ async function handleStreamingResponse(
         messageSender.updateStream(ctx, progressText);
       },
       onToolStart: (toolName, input) => {
-        messageSender.updateToolOperation(chatId, toolName, input);
+        messageSender.updateToolOperation(chatId, toolName, input, ctx);
       },
       onToolEnd: () => {
         messageSender.clearToolOperation(chatId);
@@ -591,18 +591,25 @@ async function handleWaitResponse(
   chatId: number,
   message: string
 ): Promise<void> {
-  // Send typing indicator
-  await ctx.replyWithChatAction('typing');
+  // Start continuous typing indicator (every 4s)
+  const typingInterval = messageSender.startTypingIndicator(ctx.api, chatId);
 
   const abortController = new AbortController();
   setAbortController(chatId, abortController);
 
-  const response = await sendToAgent(chatId, message, { abortController });
-  await messageSender.sendMessage(ctx, response.text);
-  await maybeSendVoiceReply(ctx, response.text);
+  try {
+    const response = await sendToAgent(chatId, message, { abortController });
+    messageSender.stopTypingInterval(typingInterval);
 
-  // Context visibility notifications
-  await sendUsageFooter(ctx, response.usage);
-  await sendCompactionNotification(ctx, response.compaction);
-  await sendSessionInitNotification(ctx, chatId, response.sessionInit);
+    await messageSender.sendMessage(ctx, response.text);
+    await maybeSendVoiceReply(ctx, response.text);
+
+    // Context visibility notifications
+    await sendUsageFooter(ctx, response.usage);
+    await sendCompactionNotification(ctx, response.compaction);
+    await sendSessionInitNotification(ctx, chatId, response.sessionInit);
+  } catch (error) {
+    messageSender.stopTypingInterval(typingInterval);
+    throw error;
+  }
 }
