@@ -9,12 +9,15 @@ import {
   type SettingSource,
   type HookEvent,
   type HookCallbackMatcher,
+  type McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import { sessionManager } from './session-manager.js';
 import { setActiveQuery, clearActiveQuery, isCancelled } from './request-queue.js';
+import type { Context } from 'grammy';
 import { config } from '../config.js';
 import { AgentWatchdog } from './agent-watchdog.js';
+import { createClaudegramMcpServer } from './mcp-tools.js';
 import {
   createAgentTimer,
   recordMessage,
@@ -55,6 +58,7 @@ interface AgentOptions {
   abortController?: AbortController;
   command?: string;
   model?: string;
+  telegramCtx?: Context;
 }
 
 interface LoopOptions extends AgentOptions {
@@ -62,19 +66,19 @@ interface LoopOptions extends AgentOptions {
   onIterationComplete?: (iteration: number, response: string) => void;
 }
 
-const conversationHistory: Map<number, ConversationMessage[]> = new Map();
+const conversationHistory: Map<string, ConversationMessage[]> = new Map();
 
-// Track Claude Code session IDs per chat for conversation continuity
-const chatSessionIds: Map<number, string> = new Map();
+// Track Claude Code session IDs per session for conversation continuity
+const chatSessionIds: Map<string, string> = new Map();
 
-// Track current model per chat (default: opus)
-const chatModels: Map<number, string> = new Map();
+// Track current model per session (default: opus)
+const chatModels: Map<string, string> = new Map();
 
-// Cache latest usage per chat for /context and /status commands
-const chatUsageCache: Map<number, AgentUsage> = new Map();
+// Cache latest usage per session for /context and /status commands
+const chatUsageCache: Map<string, AgentUsage> = new Map();
 
-export function getCachedUsage(chatId: number): AgentUsage | undefined {
-  return chatUsageCache.get(chatId);
+export function getCachedUsage(sessionKey: string): AgentUsage | undefined {
+  return chatUsageCache.get(sessionKey);
 }
 
 const CORE_GUIDELINES = `You are ${config.BOT_NAME}, an AI assistant helping via Telegram.
@@ -164,49 +168,44 @@ const BASE_SYSTEM_PROMPT = CORE_GUIDELINES + (config.TELEGRAPH_ENABLED ? TELEGRA
 const REDDIT_TOOL_PROMPT = `
 
 Reddit Tool:
-The user has a native /reddit command in Telegram that fetches Reddit content directly (no Bash needed).
-
-Usage: /reddit <target> [options]
-Targets: post URL, post ID, r/<subreddit>, u/<username>, share links (reddit.com/r/.../s/...)
-Flags: --sort <hot|new|top|rising>, --limit <n>, --time <day|week|month|year|all>, --depth <n>, -f <markdown|json>
-The tool handles authentication and formatting automatically.
-
-For large threads (>${config.REDDITFETCH_JSON_THRESHOLD_CHARS} chars), the bot automatically saves a JSON file and sends it to the user.
-If the user wants to explore a large thread, suggest they use /reddit with the post URL — the bot will handle the JSON file workflow automatically.
+You have a claudegram_fetch_reddit MCP tool that fetches Reddit content directly (subreddits, posts with comments, user profiles).
+Use it when the user asks about Reddit content — no need to tell them to use a command.
+The tool accepts a target (r/<subreddit>, u/<username>, post URL, post ID) and optional sort/time/limit/depth parameters.
 
 Semantic mappings for natural language Reddit queries:
-- "today" / "today's top" → --sort top --time day
-- "newest" / "latest" / "recent" → --sort new
-- "hottest" / "trending" / "what's hot" → --sort hot
-- "top" / "best" → --sort top
-- "this week" → --sort top --time week
-- "this month" → --sort top --time month
-- "rising" → --sort rising`;
+- "today" / "today's top" → sort: top, time_filter: day
+- "newest" / "latest" / "recent" → sort: new
+- "hottest" / "trending" / "what's hot" → sort: hot
+- "top" / "best" → sort: top
+- "this week" → sort: top, time_filter: week
+- "this month" → sort: top, time_filter: month
+- "rising" → sort: rising
+
+The user also has a /reddit Telegram command for direct use.`;
 
 const REDDIT_VIDEO_TOOL_PROMPT = `
 
 Reddit Video Tool:
 The user can download Reddit-hosted videos via the /vreddit Telegram command.
 If the user wants a video file, tell them to use /vreddit with the post URL.
-Do NOT use the Reddit Tool above to download media; it is for text/comments only.`;
+The claudegram_fetch_reddit tool is for text/comments only, not media downloads.`;
 
 const MEDIUM_TOOL_PROMPT = `
 
 Medium Tool:
-The user can fetch Medium articles via the /medium Telegram command (uses Freedium).
-You do NOT need to fetch Medium articles yourself — the bot handles it directly.`;
+You have a claudegram_fetch_medium MCP tool that fetches Medium articles (bypasses paywall via Freedium).
+Use it when the user shares a Medium URL or asks to read an article — no need to tell them to use a command.
+The user also has a /medium Telegram command for direct use.`;
 
 const EXTRACT_TOOL_PROMPT = `
 
 Media Extract Tool:
-The user can extract text transcripts, audio, or video from YouTube, Instagram, and TikTok URLs using the /extract Telegram command.
-Usage: /extract <url> — shows a menu to pick: Text, Audio, Video, or All.
-- Text: Downloads audio, transcribes via Groq Whisper, returns transcript
-- Audio: Downloads and sends the audio file (MP3)
-- Video: Downloads and sends the video file (MP4, if under 50MB)
-- All: Returns transcript + audio + video
-If the user asks you to transcribe a YouTube/Instagram/TikTok video, tell them to use /extract with the URL.
-For voice notes sent directly in chat, use /transcribe instead.`;
+You have a claudegram_extract_media MCP tool that extracts content from YouTube, Instagram, and TikTok URLs.
+Use mode "text" to transcribe videos, "audio" for MP3, "video" for MP4, "all" for everything.
+Audio/video files are sent directly to the user via Telegram as a side effect.
+Use it when the user asks to transcribe, download, or extract media from a URL — no need to tell them to use a command.
+For voice notes sent directly in chat, the user should use /transcribe instead.
+The user also has an /extract Telegram command for direct use.`;
 
 const REASONING_SUMMARY_INSTRUCTIONS = `
 
@@ -276,30 +275,30 @@ function getPermissionMode(command?: string): PermissionMode {
 /**
  * Log operations when DANGEROUS_MODE is enabled for security auditing.
  */
-function logDangerousModeOperation(chatId: number, operation: string, details?: string): void {
+function logDangerousModeOperation(sessionKey: string, operation: string, details?: string): void {
   if (!config.DANGEROUS_MODE) return;
   const timestamp = new Date().toISOString();
   const detailStr = details ? ` — ${details}` : '';
-  console.log(`[DANGEROUS_MODE] ${timestamp} chat:${chatId} ${operation}${detailStr}`);
+  console.log(`[DANGEROUS_MODE] ${timestamp} session:${sessionKey} ${operation}${detailStr}`);
 }
 
 export async function sendToAgent(
-  chatId: number,
+  sessionKey: string,
   message: string,
   options: AgentOptions = {}
 ): Promise<AgentResponse> {
   const { onProgress, onToolStart, onToolEnd, abortController, command, model } = options;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
 
   if (!session) {
     throw new Error('No active session. Use /project to set working directory.');
   }
 
-  sessionManager.updateActivity(chatId, message);
+  sessionManager.updateActivity(sessionKey, message);
 
   // Get or initialize conversation history
-  let history = conversationHistory.get(chatId) || [];
+  let history = conversationHistory.get(sessionKey) || [];
 
   // Determine the prompt based on command
   let prompt = message;
@@ -324,10 +323,10 @@ export async function sendToAgent(
   const permissionMode = getPermissionMode(command);
 
   // Log in dangerous mode for security auditing
-  logDangerousModeOperation(chatId, 'query', `prompt_length:${message.length} cwd:${session.workingDirectory}`);
+  logDangerousModeOperation(sessionKey, 'query', `prompt_length:${message.length} cwd:${session.workingDirectory}`);
 
   // Determine model to use (default to 'opus' to match getModel() default)
-  const effectiveModel = model || chatModels.get(chatId) || 'opus';
+  const effectiveModel = model || chatModels.get(sessionKey) || 'opus';
 
   // Initialize timer for tracking query duration (watchdog created inside try with controller)
   const timer = createAgentTimer();
@@ -336,14 +335,14 @@ export async function sendToAgent(
   try {
     const controller = abortController || new AbortController();
 
-    const existingSessionId = chatSessionIds.get(chatId) || session.claudeSessionId;
+    const existingSessionId = chatSessionIds.get(sessionKey) || session.claudeSessionId;
 
     // Log session resume if applicable
     if (existingSessionId) {
-      if (!chatSessionIds.get(chatId)) {
-        chatSessionIds.set(chatId, existingSessionId);
+      if (!chatSessionIds.get(sessionKey)) {
+        chatSessionIds.set(sessionKey, existingSessionId);
       }
-      logAt('basic', `[Claude] Resuming session ${existingSessionId} for chat ${chatId}`);
+      logAt('basic', `[Claude] Resuming session ${existingSessionId} for session ${sessionKey}`);
     }
 
     const toolsOption = config.DANGEROUS_MODE
@@ -436,6 +435,16 @@ export async function sendToAgent(
       cwd = process.env.HOME || process.cwd();
     }
 
+    // Create MCP server for Claudegram tools (if telegramCtx is available)
+    const mcpServers: Record<string, McpServerConfig> = {};
+    if (options.telegramCtx) {
+      const server = createClaudegramMcpServer({
+        telegramCtx: options.telegramCtx,
+        sessionKey,
+      });
+      mcpServers['claudegram-tools'] = server;
+    }
+
     const queryOptions: Parameters<typeof query>[0]['options'] = {
       cwd,
       tools: toolsOption,
@@ -454,6 +463,7 @@ export async function sendToAgent(
       ...(config.CLAUDE_USE_BUNDLED_EXECUTABLE ? {} : { pathToClaudeCodeExecutable: config.CLAUDE_EXECUTABLE_PATH }),
       includePartialMessages: config.CLAUDE_SDK_INCLUDE_PARTIAL || getLogLevel() === 'trace',
       hooks,
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       stderr: (data: string) => {
         console.error('[Claude stderr]:', data);
       },
@@ -465,20 +475,20 @@ export async function sendToAgent(
     });
 
     // Store the Query object so /cancel can call interrupt()
-    setActiveQuery(chatId, response);
+    setActiveQuery(sessionKey, response);
 
     // Initialize watchdog for long-running query monitoring
     watchdog = config.AGENT_WATCHDOG_ENABLED
       ? new AgentWatchdog({
-          chatId,
+          chatId: sessionKey,
           warnAfterSeconds: config.AGENT_WATCHDOG_WARN_SECONDS,
           logIntervalSeconds: config.AGENT_WATCHDOG_LOG_SECONDS,
           timeoutMs: config.AGENT_QUERY_TIMEOUT_MS > 0 ? config.AGENT_QUERY_TIMEOUT_MS : undefined,
           onWarning: (sinceMsg, total) => {
-            logAt('basic', `[Claude] WATCHDOG: No messages for ${formatDuration(sinceMsg)} (total: ${formatDuration(total)}), chat:${chatId}`);
+            logAt('basic', `[Claude] WATCHDOG: No messages for ${formatDuration(sinceMsg)} (total: ${formatDuration(total)}), session:${sessionKey}`);
           },
           onTimeout: () => {
-            logAt('basic', `[Claude] WATCHDOG: Query timeout reached, aborting chat:${chatId}`);
+            logAt('basic', `[Claude] WATCHDOG: Query timeout reached, aborting session:${sessionKey}`);
             controller.abort();
           },
         })
@@ -589,9 +599,9 @@ export async function sendToAgent(
         if (responseMessage.subtype === 'success') {
           // Only store session_id on successful results (not on error_during_execution)
           if ('session_id' in responseMessage && responseMessage.session_id) {
-            chatSessionIds.set(chatId, responseMessage.session_id);
-            sessionManager.setClaudeSessionId(chatId, responseMessage.session_id);
-            logAt('basic', `[Claude] Stored session ${responseMessage.session_id} for chat ${chatId}`);
+            chatSessionIds.set(sessionKey, responseMessage.session_id);
+            sessionManager.setClaudeSessionId(sessionKey, responseMessage.session_id);
+            logAt('basic', `[Claude] Stored session ${responseMessage.session_id} for session ${sessionKey}`);
           }
 
           // Append final result text if different from accumulated
@@ -602,19 +612,19 @@ export async function sendToAgent(
             fullText += responseMessage.result;
             onProgress?.(fullText);
           }
-        } else if (responseMessage.subtype === 'error_during_execution' && isCancelled(chatId)) {
+        } else if (responseMessage.subtype === 'error_during_execution' && isCancelled(sessionKey)) {
           // Interrupted via /cancel - show clean cancellation message
           fullText = '✅ Successfully cancelled - no tools or agents in process.';
           onProgress?.(fullText);
         } else {
           // error_max_turns or unexpected error_during_execution
           // Clear stale session ID so next attempt starts fresh
-          chatSessionIds.delete(chatId);
-          const session = sessionManager.getSession(chatId);
+          chatSessionIds.delete(sessionKey);
+          const session = sessionManager.getSession(sessionKey);
           if (session) {
             session.claudeSessionId = undefined;
           }
-          logAt('basic', `[Claude] Cleared stale session for chat ${chatId} due to ${responseMessage.subtype}`);
+          logAt('basic', `[Claude] Cleared stale session for session ${sessionKey} due to ${responseMessage.subtype}`);
 
           fullText = `Error: ${responseMessage.subtype}`;
           onProgress?.(fullText);
@@ -624,7 +634,7 @@ export async function sendToAgent(
   } catch (error) {
     watchdog?.stop();
     // If cancelled via /cancel or /reset, return clean message
-    if (isCancelled(chatId) || abortController?.signal.aborted) {
+    if (isCancelled(sessionKey) || abortController?.signal.aborted) {
       return {
         text: '✅ Successfully cancelled - no tools or agents in process.',
         toolsUsed,
@@ -641,7 +651,7 @@ export async function sendToAgent(
     }
   } finally {
     watchdog?.stop();
-    clearActiveQuery(chatId);
+    clearActiveQuery(sessionKey);
   }
 
   // Add assistant response to history
@@ -652,11 +662,11 @@ export async function sendToAgent(
     });
   }
 
-  conversationHistory.set(chatId, history);
+  conversationHistory.set(sessionKey, history);
 
   // Cache usage for /context and /status commands
   if (resultUsage) {
-    chatUsageCache.set(chatId, resultUsage);
+    chatUsageCache.set(sessionKey, resultUsage);
   }
 
   return {
@@ -669,7 +679,7 @@ export async function sendToAgent(
 }
 
 export async function sendLoopToAgent(
-  chatId: number,
+  sessionKey: string,
   message: string,
   options: LoopOptions = {}
 ): Promise<AgentResponse> {
@@ -680,7 +690,7 @@ export async function sendLoopToAgent(
     onIterationComplete,
   } = options;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
 
   if (!session) {
     throw new Error('No active session. Use /project to set working directory.');
@@ -715,12 +725,13 @@ IMPORTANT: When you have fully completed this task, respond with the word "DONE"
     const currentPrompt = iteration === 1 ? loopPrompt : 'Continue the task. Say "DONE" when complete.';
 
     try {
-      const response = await sendToAgent(chatId, currentPrompt, {
+      const response = await sendToAgent(sessionKey, currentPrompt, {
         onProgress: (text) => {
           onProgress?.(combinedText + text);
         },
         abortController,
         model: options.model,
+        telegramCtx: options.telegramCtx,
       });
 
       combinedText += response.text;
@@ -754,22 +765,22 @@ IMPORTANT: When you have fully completed this task, respond with the word "DONE"
   };
 }
 
-export function clearConversation(chatId: number): void {
-  conversationHistory.delete(chatId);
-  chatSessionIds.delete(chatId);
-  chatUsageCache.delete(chatId);
+export function clearConversation(sessionKey: string): void {
+  conversationHistory.delete(sessionKey);
+  chatSessionIds.delete(sessionKey);
+  chatUsageCache.delete(sessionKey);
 }
 
-export function setModel(chatId: number, model: string): void {
-  chatModels.set(chatId, model);
+export function setModel(sessionKey: string, model: string): void {
+  chatModels.set(sessionKey, model);
 }
 
-export function getModel(chatId: number): string {
-  return chatModels.get(chatId) || 'opus';
+export function getModel(sessionKey: string): string {
+  return chatModels.get(sessionKey) || 'opus';
 }
 
-export function clearModel(chatId: number): void {
-  chatModels.delete(chatId);
+export function clearModel(sessionKey: string): void {
+  chatModels.delete(sessionKey);
 }
 
 export function isDangerousMode(): boolean {

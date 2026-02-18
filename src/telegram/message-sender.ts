@@ -10,6 +10,7 @@ import {
   extractToolDetail,
   TOOL_ICONS,
 } from './terminal-renderer.js';
+import { getSessionKeyFromCtx } from '../utils/session-key.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -20,6 +21,8 @@ export interface ToolOperation {
 
 interface StreamState {
   chatId: number;
+  threadId?: number;
+  sessionKey: string;
   messageId: number | null;
   content: string;
   lastUpdate: number;
@@ -38,7 +41,7 @@ const TYPING_INTERVAL_MS = 4000; // Send typing every 4 seconds
 const MIN_EDIT_INTERVAL_MS = 10000; // Minimum time between message edits (~5 edits/min safe zone)
 
 export class MessageSender {
-  private streamStates: Map<number, StreamState> = new Map();
+  private streamStates: Map<string, StreamState> = new Map();
 
   /**
    * Send a message with hybrid approach:
@@ -46,9 +49,9 @@ export class MessageSender {
    * - Long content or tables: Telegraph page link
    */
   async sendMessage(ctx: Context, text: string): Promise<void> {
-    const chatId = ctx.chat?.id;
+    const keyInfo = getSessionKeyFromCtx(ctx);
     // Check if we should use Telegraph for this content
-    if (shouldUseTelegraph(text, chatId)) {
+    if (shouldUseTelegraph(text, keyInfo?.sessionKey)) {
       const pageUrl = await createTelegraphPage('Claude Response', text);
 
       if (pageUrl) {
@@ -162,18 +165,21 @@ export class MessageSender {
   }
 
   async startStreaming(ctx: Context): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
+    const keyInfo = getSessionKeyFromCtx(ctx);
+    if (!keyInfo) return;
+    const { chatId, threadId, sessionKey } = keyInfo;
 
-    const terminalMode = isTerminalUIEnabled(chatId);
+    const terminalMode = isTerminalUIEnabled(sessionKey);
     const initialText = `${getSpinnerFrame(0)} ${TOOL_ICONS.thinking} Processing...`;
     const message = await ctx.reply(initialText, { parse_mode: undefined });
 
     // Start continuous typing indicator
-    const typingInterval = this.startTypingIndicator(ctx.api, chatId);
+    const typingInterval = this.startTypingIndicator(ctx.api, chatId, threadId);
 
     const state: StreamState = {
       chatId,
+      threadId,
+      sessionKey,
       messageId: message.message_id,
       content: '',
       lastUpdate: Date.now(),
@@ -188,7 +194,7 @@ export class MessageSender {
       rateLimitedUntil: 0,
     };
 
-    this.streamStates.set(chatId, state);
+    this.streamStates.set(sessionKey, state);
   }
 
   private stopSpinnerAnimation(state: StreamState): void {
@@ -198,13 +204,14 @@ export class MessageSender {
     }
   }
 
-  startTypingIndicator(api: Api, chatId: number): NodeJS.Timeout {
+  startTypingIndicator(api: Api, chatId: number, threadId?: number): NodeJS.Timeout {
+    const opts = threadId !== undefined ? { message_thread_id: threadId } : {};
     // Send typing immediately
-    api.sendChatAction(chatId, 'typing').catch(() => {});
+    api.sendChatAction(chatId, 'typing', opts).catch(() => {});
 
     // Then send every TYPING_INTERVAL_MS
     return setInterval(() => {
-      api.sendChatAction(chatId, 'typing').catch(() => {});
+      api.sendChatAction(chatId, 'typing', opts).catch(() => {});
     }, TYPING_INTERVAL_MS);
   }
 
@@ -223,8 +230,8 @@ export class MessageSender {
    * Update the current tool operation (terminal UI mode).
    * Event-driven: triggers a status message edit on each tool change.
    */
-  updateToolOperation(chatId: number, toolName: string, input?: Record<string, unknown>, ctx?: Context): void {
-    const state = this.streamStates.get(chatId);
+  updateToolOperation(sessionKey: string, toolName: string, input?: Record<string, unknown>, ctx?: Context): void {
+    const state = this.streamStates.get(sessionKey);
     if (!state || !state.terminalMode) return;
 
     const detail = input ? extractToolDetail(toolName, input) : undefined;
@@ -239,8 +246,8 @@ export class MessageSender {
   /**
    * Clear the current tool operation (terminal UI mode)
    */
-  clearToolOperation(chatId: number): void {
-    const state = this.streamStates.get(chatId);
+  clearToolOperation(sessionKey: string): void {
+    const state = this.streamStates.get(sessionKey);
     if (!state) return;
     state.currentOperation = null;
   }
@@ -248,8 +255,8 @@ export class MessageSender {
   /**
    * Add or update a background task status (terminal UI mode)
    */
-  updateBackgroundTask(chatId: number, taskName: string, status: 'running' | 'complete' | 'error'): void {
-    const state = this.streamStates.get(chatId);
+  updateBackgroundTask(sessionKey: string, taskName: string, status: 'running' | 'complete' | 'error'): void {
+    const state = this.streamStates.get(sessionKey);
     if (!state || !state.terminalMode) return;
 
     const existing = state.backgroundTasks.find(t => t.name === taskName);
@@ -262,7 +269,7 @@ export class MessageSender {
 
   private async flushTerminalUpdate(ctx: Context, state: StreamState): Promise<void> {
     // Verify state is still active
-    const currentState = this.streamStates.get(state.chatId);
+    const currentState = this.streamStates.get(state.sessionKey);
     if (!currentState || currentState !== state || !state.messageId || !state.terminalMode) {
       return;
     }
@@ -322,7 +329,7 @@ export class MessageSender {
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters.retry_after ?? 60;
         state.rateLimitedUntil = Date.now() + retryAfter * 1000;
-        console.warn(`[Terminal] Rate limited, backing off for ${retryAfter}s (chat:${state.chatId})`);
+        console.warn(`[Terminal] Rate limited, backing off for ${retryAfter}s (session:${state.sessionKey})`);
         return;
       }
       // Ignore "message not modified" and "message ID invalid" errors
@@ -357,20 +364,21 @@ export class MessageSender {
    * The full content is only displayed when finishStreaming() is called.
    */
   updateStream(_ctx: Context, content: string): void {
-    const chatId = _ctx.chat?.id;
-    if (!chatId) return;
+    const keyInfo = getSessionKeyFromCtx(_ctx);
+    if (!keyInfo) return;
 
-    const state = this.streamStates.get(chatId);
+    const state = this.streamStates.get(keyInfo.sessionKey);
     if (!state || !state.messageId) return;
 
     state.content = content;
   }
 
   async finishStreaming(ctx: Context, finalContent: string): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
+    const keyInfo = getSessionKeyFromCtx(ctx);
+    if (!keyInfo) return;
+    const { chatId, sessionKey } = keyInfo;
 
-    const state = this.streamStates.get(chatId);
+    const state = this.streamStates.get(sessionKey);
 
     if (state) {
       // Stop typing indicator and spinner
@@ -380,7 +388,7 @@ export class MessageSender {
 
       if (state.messageId) {
         // Check if we should use Telegraph for final content
-        if (shouldUseTelegraph(finalContent, chatId)) {
+        if (shouldUseTelegraph(finalContent, sessionKey)) {
           const pageUrl = await createTelegraphPage('Claude Response', finalContent);
 
           if (pageUrl) {
@@ -395,7 +403,7 @@ export class MessageSender {
                 { parse_mode: 'MarkdownV2' }
               );
 
-              this.streamStates.delete(chatId);
+              this.streamStates.delete(sessionKey);
               return;
             } catch (error) {
               console.error('[Telegraph] Failed, falling back to chunks:', error);
@@ -441,7 +449,7 @@ export class MessageSender {
                 await ctx.api.deleteMessage(chatId, state.messageId);
               } catch { /* ignore */ }
 
-              this.streamStates.delete(chatId);
+              this.streamStates.delete(sessionKey);
               await this.sendMessage(ctx, finalContent);
               return;
             }
@@ -452,14 +460,15 @@ export class MessageSender {
       }
     }
 
-    this.streamStates.delete(chatId);
+    this.streamStates.delete(sessionKey);
   }
 
   async cancelStreaming(ctx: Context): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (!chatId) return;
+    const keyInfo = getSessionKeyFromCtx(ctx);
+    if (!keyInfo) return;
+    const { chatId, sessionKey } = keyInfo;
 
-    const state = this.streamStates.get(chatId);
+    const state = this.streamStates.get(sessionKey);
     if (state) {
       // Stop typing indicator and spinner
       this.stopTypingIndicator(state);
@@ -479,7 +488,7 @@ export class MessageSender {
       }
     }
 
-    this.streamStates.delete(chatId);
+    this.streamStates.delete(sessionKey);
   }
 
   // Send typing indicator for a specific chat (useful for long operations)

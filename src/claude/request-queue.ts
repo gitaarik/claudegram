@@ -7,53 +7,53 @@ type QueuedRequest<T> = {
   reject: (error: Error) => void;
 };
 
-const activeAbortControllers: Map<number, AbortController> = new Map();
-const activeQueries: Map<number, Query> = new Map();
-const pendingQueues: Map<number, Array<QueuedRequest<unknown>>> = new Map();
-const processingFlags: Map<number, boolean> = new Map();
+const activeAbortControllers: Map<string, AbortController> = new Map();
+const activeQueries: Map<string, Query> = new Map();
+const pendingQueues: Map<string, Array<QueuedRequest<unknown>>> = new Map();
+const processingFlags: Map<string, boolean> = new Map();
 // Tracks chats where a cancel was initiated — checked by agent.ts to detect
 // user-initiated cancellation without calling controller.abort() (which crashes the SDK).
-const cancelledChats: Set<number> = new Set();
+const cancelledChats: Set<string> = new Set();
 
-export function getAbortController(chatId: number): AbortController | undefined {
-  return activeAbortControllers.get(chatId);
+export function getAbortController(sessionKey: string): AbortController | undefined {
+  return activeAbortControllers.get(sessionKey);
 }
 
-export function setAbortController(chatId: number, controller: AbortController): void {
-  activeAbortControllers.set(chatId, controller);
+export function setAbortController(sessionKey: string, controller: AbortController): void {
+  activeAbortControllers.set(sessionKey, controller);
 }
 
-export function clearAbortController(chatId: number): void {
-  activeAbortControllers.delete(chatId);
+export function clearAbortController(sessionKey: string): void {
+  activeAbortControllers.delete(sessionKey);
 }
 
-export function setActiveQuery(chatId: number, q: Query): void {
-  activeQueries.set(chatId, q);
+export function setActiveQuery(sessionKey: string, q: Query): void {
+  activeQueries.set(sessionKey, q);
 }
 
-export function clearActiveQuery(chatId: number): void {
-  activeQueries.delete(chatId);
+export function clearActiveQuery(sessionKey: string): void {
+  activeQueries.delete(sessionKey);
 }
 
-export function isCancelled(chatId: number): boolean {
-  return cancelledChats.has(chatId);
+export function isCancelled(sessionKey: string): boolean {
+  return cancelledChats.has(sessionKey);
 }
 
-export function clearCancelled(chatId: number): void {
-  cancelledChats.delete(chatId);
+export function clearCancelled(sessionKey: string): void {
+  cancelledChats.delete(sessionKey);
 }
 
-export function isProcessing(chatId: number): boolean {
-  return processingFlags.get(chatId) === true;
+export function isProcessing(sessionKey: string): boolean {
+  return processingFlags.get(sessionKey) === true;
 }
 
-export function getQueuePosition(chatId: number): number {
-  const queue = pendingQueues.get(chatId);
+export function getQueuePosition(sessionKey: string): number {
+  const queue = pendingQueues.get(sessionKey);
   return queue ? queue.length : 0;
 }
 
 export async function queueRequest<T>(
-  chatId: number,
+  sessionKey: string,
   message: string,
   handler: () => Promise<T>
 ): Promise<T> {
@@ -65,28 +65,28 @@ export async function queueRequest<T>(
       reject,
     };
 
-    let queue = pendingQueues.get(chatId);
+    let queue = pendingQueues.get(sessionKey);
     if (!queue) {
       queue = [];
-      pendingQueues.set(chatId, queue);
+      pendingQueues.set(sessionKey, queue);
     }
     queue.push(request as QueuedRequest<unknown>);
 
-    processQueue(chatId);
+    processQueue(sessionKey);
   });
 }
 
-async function processQueue(chatId: number): Promise<void> {
-  if (processingFlags.get(chatId)) {
+async function processQueue(sessionKey: string): Promise<void> {
+  if (processingFlags.get(sessionKey)) {
     return;
   }
 
-  const queue = pendingQueues.get(chatId);
+  const queue = pendingQueues.get(sessionKey);
   if (!queue || queue.length === 0) {
     return;
   }
 
-  processingFlags.set(chatId, true);
+  processingFlags.set(sessionKey, true);
   const request = queue.shift()!;
 
   try {
@@ -95,41 +95,41 @@ async function processQueue(chatId: number): Promise<void> {
   } catch (error) {
     request.reject(error instanceof Error ? error : new Error(String(error)));
   } finally {
-    processingFlags.set(chatId, false);
-    clearAbortController(chatId);
-    clearActiveQuery(chatId);
-    clearCancelled(chatId);
+    processingFlags.set(sessionKey, false);
+    clearAbortController(sessionKey);
+    clearActiveQuery(sessionKey);
+    clearCancelled(sessionKey);
 
     if (queue.length > 0) {
-      processQueue(chatId);
+      processQueue(sessionKey);
     }
   }
 }
 
 /** Soft cancel: interrupt the running query but keep the session alive. */
-export async function cancelRequest(chatId: number): Promise<boolean> {
-  const q = activeQueries.get(chatId);
+export async function cancelRequest(sessionKey: string): Promise<boolean> {
+  const q = activeQueries.get(sessionKey);
 
   if (q) {
     // Set the cancelled flag BEFORE interrupt so agent.ts can detect it
     // when the error_during_execution result arrives.
     // Do NOT call controller.abort() — that crashes the SDK subprocess.
-    cancelledChats.add(chatId);
+    cancelledChats.add(sessionKey);
     try {
       await q.interrupt();
     } catch (err) {
-      console.debug('[cancelRequest] interrupt() threw for chat', chatId, err);
+      console.debug('[cancelRequest] interrupt() threw for chat', sessionKey, err);
     }
-    clearActiveQuery(chatId);
+    clearActiveQuery(sessionKey);
     return true;
   }
 
   // Fallback to AbortController if no query stored
-  const controller = activeAbortControllers.get(chatId);
+  const controller = activeAbortControllers.get(sessionKey);
   if (controller) {
-    cancelledChats.add(chatId);
+    cancelledChats.add(sessionKey);
     controller.abort();
-    clearAbortController(chatId);
+    clearAbortController(sessionKey);
     return true;
   }
 
@@ -137,36 +137,36 @@ export async function cancelRequest(chatId: number): Promise<boolean> {
 }
 
 /** Soft reset: interrupt query + signal abort to fully tear down the session. */
-export async function resetRequest(chatId: number): Promise<boolean> {
-  const q = activeQueries.get(chatId);
-  const controller = activeAbortControllers.get(chatId);
+export async function resetRequest(sessionKey: string): Promise<boolean> {
+  const q = activeQueries.get(sessionKey);
+  const controller = activeAbortControllers.get(sessionKey);
 
   if (q) {
-    cancelledChats.add(chatId);
+    cancelledChats.add(sessionKey);
     try {
       await q.interrupt();
     } catch (err) {
-      console.debug('[resetRequest] interrupt() threw for chat', chatId, err);
+      console.debug('[resetRequest] interrupt() threw for chat', sessionKey, err);
     }
     // Also abort controller to fully tear down
     if (controller) controller.abort();
-    clearActiveQuery(chatId);
-    clearAbortController(chatId);
+    clearActiveQuery(sessionKey);
+    clearAbortController(sessionKey);
     return true;
   }
 
   if (controller) {
-    cancelledChats.add(chatId);
+    cancelledChats.add(sessionKey);
     controller.abort();
-    clearAbortController(chatId);
+    clearAbortController(sessionKey);
     return true;
   }
 
   return false;
 }
 
-export function clearQueue(chatId: number): number {
-  const queue = pendingQueues.get(chatId);
+export function clearQueue(sessionKey: string): number {
+  const queue = pendingQueues.get(sessionKey);
   if (!queue) return 0;
 
   const count = queue.length;

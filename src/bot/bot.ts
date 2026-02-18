@@ -2,6 +2,7 @@ import { Bot, type Context } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { sequentialize } from '@grammyjs/runner';
 import { config } from '../config.js';
+import { buildSessionKey } from '../utils/session-key.js';
 import { authMiddleware } from './middleware/auth.middleware.js';
 import {
   handleStart,
@@ -57,7 +58,13 @@ import { handlePhoto, handleImageDocument } from './handlers/photo.handler.js';
 // Resolve sequentialize constraint: same-chat updates are ordered,
 // but /cancel is registered BEFORE this middleware so it bypasses it.
 function getSequentializeKey(ctx: Context): string | undefined {
-  return ctx.chat?.id.toString();
+  const chatId = ctx.chat?.id;
+  if (!chatId) return undefined;
+  const msg = (ctx.message ?? ctx.callbackQuery?.message) as
+    | { is_topic_message?: boolean; message_thread_id?: number }
+    | undefined;
+  const threadId = msg?.is_topic_message ? msg.message_thread_id : undefined;
+  return buildSessionKey(chatId, threadId);
 }
 
 export async function createBot(): Promise<Bot> {

@@ -20,14 +20,14 @@ export interface TelegraphSettings {
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claudegram');
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'telegraph-settings.json');
-const chatTelegraphSettings: Map<number, TelegraphSettings> = new Map();
+const chatTelegraphSettings: Map<string, TelegraphSettings> = new Map();
 
 /**
- * Validate chatId is a finite positive integer to prevent injection.
+ * Validate sessionKey is a non-empty string to prevent injection.
  */
-function validateChatId(chatId: number): void {
-  if (!Number.isFinite(chatId) || chatId <= 0 || !Number.isInteger(chatId)) {
-    throw new Error(`Invalid chatId: ${chatId}`);
+function validateSessionKey(sessionKey: string): void {
+  if (!sessionKey || typeof sessionKey !== 'string') {
+    throw new Error(`Invalid sessionKey: ${sessionKey}`);
   }
 }
 
@@ -80,10 +80,8 @@ function loadSettings(): void {
       return;
     }
 
-    for (const [chatId, settings] of Object.entries(result.data.settings)) {
-      const id = Number(chatId);
-      if (!Number.isFinite(id)) continue;
-      chatTelegraphSettings.set(id, normalizeSettings(settings));
+    for (const [key, settings] of Object.entries(result.data.settings)) {
+      chatTelegraphSettings.set(key, normalizeSettings(settings));
     }
   } catch (error) {
     console.error('[Telegraph] Failed to load settings:', error);
@@ -93,8 +91,8 @@ function loadSettings(): void {
 function saveSettings(): void {
   ensureDirectory();
   const settings: Record<string, TelegraphSettings> = {};
-  for (const [chatId, value] of chatTelegraphSettings.entries()) {
-    settings[String(chatId)] = value;
+  for (const [key, value] of chatTelegraphSettings.entries()) {
+    settings[key] = value;
   }
 
   try {
@@ -106,26 +104,26 @@ function saveSettings(): void {
 
 loadSettings();
 
-export function getTelegraphSettings(chatId: number): TelegraphSettings {
-  validateChatId(chatId);
+export function getTelegraphSettings(sessionKey: string): TelegraphSettings {
+  validateSessionKey(sessionKey);
 
-  const existing = chatTelegraphSettings.get(chatId);
+  const existing = chatTelegraphSettings.get(sessionKey);
   if (existing) return existing;
 
   const defaults = normalizeSettings();
-  chatTelegraphSettings.set(chatId, defaults);
+  chatTelegraphSettings.set(sessionKey, defaults);
   saveSettings();
   return defaults;
 }
 
-export function setTelegraphEnabled(chatId: number, enabled: boolean): void {
-  validateChatId(chatId);
+export function setTelegraphEnabled(sessionKey: string, enabled: boolean): void {
+  validateSessionKey(sessionKey);
 
-  const settings = getTelegraphSettings(chatId);
+  const settings = getTelegraphSettings(sessionKey);
   settings.enabled = enabled;
   saveSettings();
 }
 
-export function isTelegraphEnabled(chatId: number): boolean {
-  return getTelegraphSettings(chatId).enabled;
+export function isTelegraphEnabled(sessionKey: string): boolean {
+  return getTelegraphSettings(sessionKey).enabled;
 }

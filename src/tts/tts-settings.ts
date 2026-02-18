@@ -24,7 +24,7 @@ export interface TTSSettings {
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claudegram');
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'tts-settings.json');
-const chatTTSSettings: Map<number, TTSSettings> = new Map();
+const chatTTSSettings: Map<string, TTSSettings> = new Map();
 
 function ensureDirectory(): void {
   if (!fs.existsSync(SETTINGS_DIR)) {
@@ -80,10 +80,8 @@ function loadSettings(): void {
       return;
     }
 
-    for (const [chatId, settings] of Object.entries(result.data.settings)) {
-      const id = Number(chatId);
-      if (!Number.isFinite(id)) continue;
-      chatTTSSettings.set(id, normalizeSettings(settings));
+    for (const [key, settings] of Object.entries(result.data.settings)) {
+      chatTTSSettings.set(key, normalizeSettings(settings));
     }
   } catch (error) {
     console.error('[TTS] Failed to load settings:', error);
@@ -93,8 +91,8 @@ function loadSettings(): void {
 function saveSettings(): void {
   ensureDirectory();
   const settings: Record<string, TTSSettings> = {};
-  for (const [chatId, value] of chatTTSSettings.entries()) {
-    settings[String(chatId)] = value;
+  for (const [key, value] of chatTTSSettings.entries()) {
+    settings[key] = value;
   }
 
   try {
@@ -106,34 +104,34 @@ function saveSettings(): void {
 
 loadSettings();
 
-export function getTTSSettings(chatId: number): TTSSettings {
-  const existing = chatTTSSettings.get(chatId);
+export function getTTSSettings(sessionKey: string): TTSSettings {
+  const existing = chatTTSSettings.get(sessionKey);
   if (existing) return existing;
 
   const defaults = normalizeSettings();
-  chatTTSSettings.set(chatId, defaults);
+  chatTTSSettings.set(sessionKey, defaults);
   saveSettings();
   return defaults;
 }
 
-export function setTTSEnabled(chatId: number, enabled: boolean): void {
-  const settings = getTTSSettings(chatId);
+export function setTTSEnabled(sessionKey: string, enabled: boolean): void {
+  const settings = getTTSSettings(sessionKey);
   settings.enabled = enabled;
   saveSettings();
 }
 
-export function setTTSVoice(chatId: number, voice: string): void {
-  const settings = getTTSSettings(chatId);
+export function setTTSVoice(sessionKey: string, voice: string): void {
+  const settings = getTTSSettings(sessionKey);
   settings.voice = voice;
   saveSettings();
 }
 
-export function setTTSAutoplay(chatId: number, autoplay: boolean): void {
-  const settings = getTTSSettings(chatId);
+export function setTTSAutoplay(sessionKey: string, autoplay: boolean): void {
+  const settings = getTTSSettings(sessionKey);
   settings.autoplay = autoplay;
   saveSettings();
 }
 
-export function isTTSEnabled(chatId: number): boolean {
-  return getTTSSettings(chatId).enabled;
+export function isTTSEnabled(sessionKey: string): boolean {
+  return getTTSSettings(sessionKey).enabled;
 }

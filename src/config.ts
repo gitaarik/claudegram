@@ -16,6 +16,10 @@ const envSchema = z.object({
     .string()
     .min(1, 'At least one allowed user ID is required')
     .transform((val) => val.split(',').map((id) => parseInt(id.trim(), 10))),
+  ALLOWED_GROUP_IDS: z
+    .string()
+    .default('')
+    .transform((val) => val ? val.split(',').map((id) => parseInt(id.trim(), 10)) : []),
   ANTHROPIC_API_KEY: z.string().optional(), // Optional - uses Claude Max subscription if not set
   // OpenAI (TTS)
   OPENAI_API_KEY: z.string().optional(),

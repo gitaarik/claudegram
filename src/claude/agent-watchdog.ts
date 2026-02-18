@@ -6,7 +6,7 @@
 import { formatDuration } from '../utils/agent-timer.js';
 
 export interface WatchdogOptions {
-  chatId: number;
+  chatId: string;
   warnAfterSeconds: number;
   logIntervalSeconds: number;
   timeoutMs?: number; // 0 or undefined = no hard timeout
@@ -15,7 +15,7 @@ export interface WatchdogOptions {
 }
 
 export class AgentWatchdog {
-  private chatId: number;
+  private chatId: string;
   private warnAfterMs: number;
   private logIntervalMs: number;
   private timeoutMs: number;

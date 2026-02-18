@@ -37,13 +37,13 @@ interface Session {
 }
 
 class SessionManager {
-  private sessions: Map<number, Session> = new Map();
+  private sessions: Map<string, Session> = new Map();
 
-  getSession(chatId: number): Session | undefined {
-    return this.sessions.get(chatId);
+  getSession(sessionKey: string): Session | undefined {
+    return this.sessions.get(sessionKey);
   }
 
-  createSession(chatId: number, workingDirectory: string, conversationId?: string): Session {
+  createSession(sessionKey: string, workingDirectory: string, conversationId?: string): Session {
     const resolved = resolveWorkingDirectory(workingDirectory);
     const session: Session = {
       conversationId: conversationId || this.generateConversationId(),
@@ -52,45 +52,45 @@ class SessionManager {
       createdAt: new Date(),
       lastActivity: new Date(),
     };
-    this.sessions.set(chatId, session);
+    this.sessions.set(sessionKey, session);
 
     // Persist to history
-    sessionHistory.saveSession(chatId, session.conversationId, resolved, '', session.claudeSessionId);
+    sessionHistory.saveSession(sessionKey, session.conversationId, resolved, '', session.claudeSessionId);
 
     return session;
   }
 
-  updateActivity(chatId: number, messagePreview?: string): void {
-    const session = this.sessions.get(chatId);
+  updateActivity(sessionKey: string, messagePreview?: string): void {
+    const session = this.sessions.get(sessionKey);
     if (session) {
       session.lastActivity = new Date();
 
       // Update history with last message preview
       if (messagePreview) {
-        sessionHistory.updateLastMessage(chatId, session.conversationId, messagePreview);
+        sessionHistory.updateLastMessage(sessionKey, session.conversationId, messagePreview);
       }
     }
   }
 
-  setWorkingDirectory(chatId: number, directory: string): Session {
-    const existing = this.sessions.get(chatId);
+  setWorkingDirectory(sessionKey: string, directory: string): Session {
+    const existing = this.sessions.get(sessionKey);
     if (existing) {
       existing.workingDirectory = directory;
       existing.lastActivity = new Date();
       // Save updated session
-      sessionHistory.saveSession(chatId, existing.conversationId, directory, '', existing.claudeSessionId);
+      sessionHistory.saveSession(sessionKey, existing.conversationId, directory, '', existing.claudeSessionId);
       return existing;
     }
-    return this.createSession(chatId, directory);
+    return this.createSession(sessionKey, directory);
   }
 
-  clearSession(chatId: number): void {
-    this.sessions.delete(chatId);
+  clearSession(sessionKey: string): void {
+    this.sessions.delete(sessionKey);
     // Note: We don't clear history here - history is for resuming past sessions
   }
 
-  resumeSession(chatId: number, conversationId: string): Session | undefined {
-    const historyEntry = sessionHistory.getSessionByConversationId(chatId, conversationId);
+  resumeSession(sessionKey: string, conversationId: string): Session | undefined {
+    const historyEntry = sessionHistory.getSessionByConversationId(sessionKey, conversationId);
     if (!historyEntry) {
       return undefined;
     }
@@ -103,33 +103,33 @@ class SessionManager {
       createdAt: new Date(historyEntry.createdAt),
       lastActivity: new Date(),
     };
-    this.sessions.set(chatId, session);
+    this.sessions.set(sessionKey, session);
 
     // Update history activity (with resolved path)
-    sessionHistory.saveSession(chatId, conversationId, resolvedPath, historyEntry.lastMessagePreview, historyEntry.claudeSessionId);
+    sessionHistory.saveSession(sessionKey, conversationId, resolvedPath, historyEntry.lastMessagePreview, historyEntry.claudeSessionId);
 
     return session;
   }
 
-  resumeLastSession(chatId: number): Session | undefined {
-    const lastEntry = sessionHistory.getLastSession(chatId);
+  resumeLastSession(sessionKey: string): Session | undefined {
+    const lastEntry = sessionHistory.getLastSession(sessionKey);
     if (!lastEntry) {
       return undefined;
     }
 
-    return this.resumeSession(chatId, lastEntry.conversationId);
+    return this.resumeSession(sessionKey, lastEntry.conversationId);
   }
 
-  getSessionHistory(chatId: number, limit: number = 5): SessionHistoryEntry[] {
-    return sessionHistory.getHistory(chatId, limit);
+  getSessionHistory(sessionKey: string, limit: number = 5): SessionHistoryEntry[] {
+    return sessionHistory.getHistory(sessionKey, limit);
   }
 
-  setClaudeSessionId(chatId: number, claudeSessionId: string): void {
-    const session = this.sessions.get(chatId);
+  setClaudeSessionId(sessionKey: string, claudeSessionId: string): void {
+    const session = this.sessions.get(sessionKey);
     if (!session) return;
     session.claudeSessionId = claudeSessionId;
     session.lastActivity = new Date();
-    sessionHistory.updateClaudeSessionId(chatId, session.conversationId, claudeSessionId);
+    sessionHistory.updateClaudeSessionId(sessionKey, session.conversationId, claudeSessionId);
   }
 
   private generateConversationId(): string {

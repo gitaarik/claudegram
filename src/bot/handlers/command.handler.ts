@@ -49,6 +49,7 @@ import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
+import { getSessionKeyFromCtx } from '../../utils/session-key.js';
 
 // Helper for consistent MarkdownV2 replies
 async function replyMd(ctx: Context, text: string): Promise<void> {
@@ -64,10 +65,10 @@ async function replyFeatureDisabled(ctx: Context, feature: string): Promise<void
 }
 
 /** Build status lines appended to project confirmation messages. */
-export function projectStatusSuffix(chatId: number): string {
-  const model = getModel(chatId);
+export function projectStatusSuffix(sessionKey: string): string {
+  const model = getModel(sessionKey);
   const dangerous = isDangerousMode() ? '⚠️ ENABLED' : 'Disabled';
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   const created = session?.createdAt
     ? new Date(session.createdAt).toLocaleString()
     : new Date().toLocaleString();
@@ -113,7 +114,7 @@ type ProjectBrowserState = {
   page: number;
 };
 
-const projectBrowserState = new Map<number, ProjectBrowserState>();
+const projectBrowserState = new Map<string, ProjectBrowserState>();
 
 function botctlExists(): boolean {
   return fs.existsSync(BOTCTL_PATH);
@@ -217,8 +218,8 @@ async function runClaudeContext(sessionId: string, cwd: string): Promise<string>
   });
 }
 
-function buildTTSMenu(chatId: number, mode: TTSMenuMode) {
-  const settings = getTTSSettings(chatId);
+function buildTTSMenu(sessionKey: string, mode: TTSMenuMode) {
+  const settings = getTTSSettings(sessionKey);
   const hasKey = config.TTS_PROVIDER === 'groq' ? !!config.GROQ_API_KEY : !!config.OPENAI_API_KEY;
   const apiStatus = hasKey ? 'configured' : 'missing';
   const providerLabel = config.TTS_PROVIDER === 'groq' ? 'Groq Orpheus' : 'OpenAI';
@@ -278,8 +279,8 @@ function buildTTSMenu(chatId: number, mode: TTSMenuMode) {
   };
 }
 
-function buildTelegraphMenu(chatId: number) {
-  const settings = getTelegraphSettings(chatId);
+function buildTelegraphMenu(sessionKey: string) {
+  const settings = getTelegraphSettings(sessionKey);
   const globalEnabled = config.TELEGRAPH_ENABLED;
   const globalStatus = globalEnabled ? 'enabled' : 'disabled';
 
@@ -341,10 +342,11 @@ Current mode: ${config.STREAMING_MODE}${dangerousWarning}`;
 }
 
 export async function handleClear(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   const projectName = session ? path.basename(session.workingDirectory) : 'current session';
 
   await ctx.reply(
@@ -364,8 +366,9 @@ export async function handleClear(ctx: Context): Promise<void> {
 }
 
 export async function handleClearCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('clear:')) return;
@@ -373,8 +376,8 @@ export async function handleClearCallback(ctx: Context): Promise<void> {
   const action = data.replace('clear:', '');
 
   if (action === 'confirm') {
-    sessionManager.clearSession(chatId);
-    clearConversation(chatId);
+    sessionManager.clearSession(sessionKey);
+    clearConversation(sessionKey);
 
     await ctx.answerCallbackQuery({ text: 'Session cleared!' });
     await ctx.editMessageText(
@@ -388,12 +391,13 @@ export async function handleClearCallback(ctx: Context): Promise<void> {
 }
 
 export async function handleProjectCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('project:')) return;
 
-  const state = getProjectState(chatId);
+  const state = getProjectState(sessionKey);
   const action = data.split(':')[1] || '';
 
   if (action === 'manual') {
@@ -403,16 +407,16 @@ export async function handleProjectCallback(ctx: Context): Promise<void> {
   }
 
   if (action === 'use') {
-    sessionManager.setWorkingDirectory(chatId, state.current);
-    clearConversation(chatId);
+    sessionManager.setWorkingDirectory(sessionKey, state.current);
+    clearConversation(sessionKey);
 
     await ctx.answerCallbackQuery({ text: 'Project set' });
     await ctx.editMessageText(
-      `✅ Project: *${esc(path.basename(state.current))}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(chatId)}`,
+      `✅ Project: *${esc(path.basename(state.current))}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`,
       { parse_mode: 'MarkdownV2' }
     );
 
-    const s = sessionManager.getSession(chatId);
+    const s = sessionManager.getSession(sessionKey);
     if (s?.claudeSessionId) {
       await replyMd(ctx, resumeCommandMessage(s.claudeSessionId));
     }
@@ -584,9 +588,10 @@ async function sendProjectBrowser(ctx: Context, state: ProjectBrowserState, edit
 }
 
 async function sendProjectManualPrompt(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
-  const session = sessionManager.getSession(chatId);
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
+  const session = sessionManager.getSession(sessionKey);
   const currentInfo = session
     ? `\n\n_Current: ${esc(path.basename(session.workingDirectory))}_`
     : '';
@@ -604,20 +609,20 @@ async function sendProjectManualPrompt(ctx: Context): Promise<void> {
   );
 }
 
-function getProjectState(chatId: number): ProjectBrowserState {
+function getProjectState(sessionKey: string): ProjectBrowserState {
   const root = getProjectRoot();
-  const existing = projectBrowserState.get(chatId);
+  const existing = projectBrowserState.get(sessionKey);
   if (existing && existing.root === root) {
     if (!isWithinRoot(root, existing.current)) {
       existing.current = root;
       existing.page = 0;
     }
     // Refresh timestamp on access to keep active sessions alive
-    projectBrowserTimestamps.set(chatId, Date.now());
+    projectBrowserTimestamps.set(sessionKey, Date.now());
     return existing;
   }
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   let initial = root;
   if (session && isWithinRoot(root, session.workingDirectory)) {
     initial = session.workingDirectory;
@@ -628,21 +633,22 @@ function getProjectState(chatId: number): ProjectBrowserState {
     current: path.resolve(initial),
     page: 0,
   };
-  projectBrowserState.set(chatId, state);
-  projectBrowserTimestamps.set(chatId, Date.now());
+  projectBrowserState.set(sessionKey, state);
+  projectBrowserTimestamps.set(sessionKey, Date.now());
   return state;
 }
 
 export async function handleProject(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const text = ctx.message?.text || '';
   const args = text.split(' ').slice(1).join(' ').trim();
 
   // No args - prompt for input with ForceReply
   if (!args) {
-    const state = getProjectState(chatId);
+    const state = getProjectState(sessionKey);
     await sendProjectBrowser(ctx, state, false);
     return;
   }
@@ -674,20 +680,21 @@ export async function handleProject(ctx: Context): Promise<void> {
     return;
   }
 
-  sessionManager.setWorkingDirectory(chatId, projectPath);
-  clearConversation(chatId);
+  sessionManager.setWorkingDirectory(sessionKey, projectPath);
+  clearConversation(sessionKey);
 
-  await replyMd(ctx, `✅ Project: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(chatId)}`);
+  await replyMd(ctx, `✅ Project: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`);
 
-  const s = sessionManager.getSession(chatId);
+  const s = sessionManager.getSession(sessionKey);
   if (s?.claudeSessionId) {
     await replyMd(ctx, resumeCommandMessage(s.claudeSessionId));
   }
 }
 
 export async function handleNewProject(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const text = ctx.message?.text || '';
   const args = text.split(' ').slice(1).join(' ').trim();
@@ -710,12 +717,12 @@ export async function handleNewProject(ctx: Context): Promise<void> {
   }
 
   fs.mkdirSync(projectPath, { recursive: true, mode: 0o700 });
-  sessionManager.setWorkingDirectory(chatId, projectPath);
-  clearConversation(chatId);
+  sessionManager.setWorkingDirectory(sessionKey, projectPath);
+  clearConversation(sessionKey);
 
-  await replyMd(ctx, `✅ Created and opened: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(chatId)}`);
+  await replyMd(ctx, `✅ Created and opened: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`);
 
-  const s = sessionManager.getSession(chatId);
+  const s = sessionManager.getSession(sessionKey);
   if (s?.claudeSessionId) {
     await replyMd(ctx, resumeCommandMessage(s.claudeSessionId));
   }
@@ -808,17 +815,18 @@ function listMarkdownFiles(projectPath: string, maxDepth: number = 3): string[] 
 }
 
 export async function handleStatus(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
 
   if (!session) {
     await replyMd(ctx, 'ℹ️ No active session\\.\n\nUse `/project /path/to/project` to get started\\.');
     return;
   }
 
-  const currentModel = getModel(chatId);
+  const currentModel = getModel(sessionKey);
   const dangerousMode = isDangerousMode() ? '⚠️ ENABLED' : 'Disabled';
 
   let status = `📊 *Session Status*
@@ -832,7 +840,7 @@ export async function handleStatus(ctx: Context): Promise<void> {
 • *Dangerous Mode:* ${esc(dangerousMode)}
 • *Uptime:* ${esc(getUptimeFormatted())}`;
 
-  const cached = getCachedUsage(chatId);
+  const cached = getCachedUsage(sessionKey);
   if (cached) {
     const pct = cached.contextWindow > 0
       ? Math.round(((cached.inputTokens + cached.outputTokens) / cached.contextWindow) * 100)
@@ -897,10 +905,11 @@ export async function handleModeCallback(ctx: Context): Promise<void> {
 }
 
 export async function handleTerminalUI(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const settings = getTerminalUISettings(chatId);
+  const settings = getTerminalUISettings(sessionKey);
   const currentStatus = settings.enabled ? 'ON' : 'OFF';
 
   const keyboard = [
@@ -930,14 +939,15 @@ export async function handleTerminalUI(ctx: Context): Promise<void> {
 }
 
 export async function handleTerminalUICallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('terminalui:')) return;
 
   const newState = data.replace('terminalui:', '') === 'on';
-  setTerminalUIEnabled(chatId, newState);
+  setTerminalUIEnabled(sessionKey, newState);
 
   const statusText = newState ? 'ON' : 'OFF';
   const description = newState
@@ -952,10 +962,11 @@ export async function handleTerminalUICallback(ctx: Context): Promise<void> {
 }
 
 export async function handleTTS(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const menu = buildTTSMenu(chatId, 'main');
+  const menu = buildTTSMenu(sessionKey, 'main');
 
   await ctx.reply(menu.text, {
     parse_mode: 'MarkdownV2',
@@ -964,8 +975,9 @@ export async function handleTTS(ctx: Context): Promise<void> {
 }
 
 export async function handleTTSCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('tts:')) return;
@@ -975,27 +987,27 @@ export async function handleTTSCallback(ctx: Context): Promise<void> {
     const keyName = config.TTS_PROVIDER === 'groq' ? 'GROQ_API_KEY' : 'OPENAI_API_KEY';
     if (!hasKey) {
       await ctx.answerCallbackQuery({ text: `${keyName} missing. Set it in .env and restart.` });
-      setTTSEnabled(chatId, false);
+      setTTSEnabled(sessionKey, false);
     } else {
-      setTTSEnabled(chatId, true);
+      setTTSEnabled(sessionKey, true);
     }
   } else if (data === 'tts:off') {
-    setTTSEnabled(chatId, false);
+    setTTSEnabled(sessionKey, false);
   } else if (data === 'tts:autoplay') {
-    const current = getTTSSettings(chatId);
-    setTTSAutoplay(chatId, !current.autoplay);
+    const current = getTTSSettings(sessionKey);
+    setTTSAutoplay(sessionKey, !current.autoplay);
   } else if (data.startsWith('tts:voice:')) {
     const voice = data.replace('tts:voice:', '');
     const voices = getActiveTTSVoices();
     if (voices.includes(voice)) {
-      setTTSVoice(chatId, voice);
+      setTTSVoice(sessionKey, voice);
     }
   }
 
   const mode: TTSMenuMode = data === 'tts:voices' || data.startsWith('tts:voice:')
     ? 'voices'
     : 'main';
-  const menu = buildTTSMenu(chatId, mode);
+  const menu = buildTTSMenu(sessionKey, mode);
 
   await ctx.answerCallbackQuery();
   try {
@@ -1012,8 +1024,9 @@ export async function handleTTSCallback(ctx: Context): Promise<void> {
 }
 
 export async function handleTelegraphCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('telegraph:')) return;
@@ -1022,15 +1035,15 @@ export async function handleTelegraphCallback(ctx: Context): Promise<void> {
   if (data === 'telegraph:on') {
     if (!config.TELEGRAPH_ENABLED) {
       await ctx.answerCallbackQuery({ text: 'Telegraph disabled in config. Set TELEGRAPH_ENABLED=true in .env.' });
-      setTelegraphEnabled(chatId, false);
+      setTelegraphEnabled(sessionKey, false);
     } else {
-      setTelegraphEnabled(chatId, true);
+      setTelegraphEnabled(sessionKey, true);
     }
   } else if (data === 'telegraph:off') {
-    setTelegraphEnabled(chatId, false);
+    setTelegraphEnabled(sessionKey, false);
   }
 
-  const menu = buildTelegraphMenu(chatId);
+  const menu = buildTelegraphMenu(sessionKey);
 
   await ctx.answerCallbackQuery();
   try {
@@ -1052,10 +1065,11 @@ export async function handlePing(ctx: Context): Promise<void> {
 }
 
 export async function handleContext(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { chatId, sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -1065,7 +1079,7 @@ export async function handleContext(ctx: Context): Promise<void> {
   }
 
   // Try cached SDK usage first (instant, no CLI shell-out)
-  const cached = getCachedUsage(chatId);
+  const cached = getCachedUsage(sessionKey);
   if (cached) {
     const pct = cached.contextWindow > 0
       ? Math.round(((cached.inputTokens + cached.outputTokens + cached.cacheReadTokens) / cached.contextWindow) * 100)
@@ -1130,8 +1144,8 @@ export async function handleBotStatus(ctx: Context): Promise<void> {
       : `${seconds}s`;
 
   const mode = config.BOT_MODE === 'prod' ? 'Production' : 'Development';
-  const chatId = ctx.chat?.id;
-  const model = chatId ? getModel(chatId) : 'opus';
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  const model = keyInfo ? getModel(keyInfo.sessionKey) : 'opus';
   const streaming = config.STREAMING_MODE || 'streaming';
   const pid = process.pid;
   const memMB = (process.memoryUsage.rss() / 1024 / 1024).toFixed(1);
@@ -1160,10 +1174,10 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
   );
 
   // Send restore buttons immediately — the process gets killed too fast for a delayed send
-  const chatId = ctx.chat?.id;
-  if (chatId) {
+  const restartChatId = ctx.chat?.id;
+  if (restartChatId) {
     try {
-      await ctx.api.sendMessage(chatId, '👇 Restore your session after restart:', {
+      await ctx.api.sendMessage(restartChatId, '👇 Restore your session after restart:', {
         reply_markup: {
           inline_keyboard: [
             [
@@ -1206,12 +1220,13 @@ export async function handleRestartCallback(ctx: Context): Promise<void> {
 }
 
 export async function handleCancel(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const wasProcessing = isProcessing(chatId);
-  const cancelled = await cancelRequest(chatId);
-  const clearedCount = clearQueue(chatId);
+  const wasProcessing = isProcessing(sessionKey);
+  const cancelled = await cancelRequest(sessionKey);
+  const clearedCount = clearQueue(sessionKey);
 
   if (cancelled || clearedCount > 0) {
     let message = '🛑 Cancelled\\.';
@@ -1225,16 +1240,17 @@ export async function handleCancel(ctx: Context): Promise<void> {
 }
 
 export async function handleReset(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { chatId, sessionKey } = keyInfo;
 
-  const wasProcessing = isProcessing(chatId);
-  const reset = await resetRequest(chatId);
-  clearQueue(chatId);
+  const wasProcessing = isProcessing(sessionKey);
+  const reset = await resetRequest(sessionKey);
+  clearQueue(sessionKey);
 
   // Clear the session so user starts fresh
-  clearConversation(chatId);
-  sessionManager.clearSession(chatId);
+  clearConversation(sessionKey);
+  sessionManager.clearSession(sessionKey);
 
   if (wasProcessing || reset) {
     await replyMd(ctx, '🔄 Session reset\\. Current request cancelled and session cleared\\.');
@@ -1279,8 +1295,9 @@ export async function handleCommands(ctx: Context): Promise<void> {
 }
 
 export async function handleModelCommand(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const text = ctx.message?.text || '';
   const args = text.split(' ').slice(1).join(' ').trim().toLowerCase();
@@ -1288,7 +1305,7 @@ export async function handleModelCommand(ctx: Context): Promise<void> {
   const validModels = ['sonnet', 'opus', 'haiku'];
 
   if (!args) {
-    const currentModel = getModel(chatId);
+    const currentModel = getModel(sessionKey);
 
     // Show inline keyboard for model selection
     const keyboard = validModels.map((model) => {
@@ -1314,13 +1331,14 @@ export async function handleModelCommand(ctx: Context): Promise<void> {
     return;
   }
 
-  setModel(chatId, args);
+  setModel(sessionKey, args);
   await replyMd(ctx, `✅ Model set to *${esc(args)}*`);
 }
 
 export async function handleModelCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('model:')) return;
@@ -1333,7 +1351,7 @@ export async function handleModelCallback(ctx: Context): Promise<void> {
     return;
   }
 
-  setModel(chatId, model);
+  setModel(sessionKey, model);
 
   await ctx.answerCallbackQuery({ text: `Model set to ${model}!` });
   await ctx.editMessageText(
@@ -1343,10 +1361,11 @@ export async function handleModelCallback(ctx: Context): Promise<void> {
 }
 
 export async function handlePlan(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await replyMd(ctx, '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.');
     return;
@@ -1371,14 +1390,14 @@ export async function handlePlan(ctx: Context): Promise<void> {
   }
 
   try {
-    await queueRequest(chatId, task, async () => {
+    await queueRequest(sessionKey, task, async () => {
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
       try {
-        const response = await sendToAgent(chatId, task, {
+        const response = await sendToAgent(sessionKey, task, {
           onProgress: (progressText) => {
             messageSender.updateStream(ctx, progressText);
           },
@@ -1401,10 +1420,11 @@ export async function handlePlan(ctx: Context): Promise<void> {
 }
 
 export async function handleExplore(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await replyMd(ctx, '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.');
     return;
@@ -1429,14 +1449,14 @@ export async function handleExplore(ctx: Context): Promise<void> {
   }
 
   try {
-    await queueRequest(chatId, question, async () => {
+    await queueRequest(sessionKey, question, async () => {
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
       try {
-        const response = await sendToAgent(chatId, question, {
+        const response = await sendToAgent(sessionKey, question, {
           onProgress: (progressText) => {
             messageSender.updateStream(ctx, progressText);
           },
@@ -1459,10 +1479,11 @@ export async function handleExplore(ctx: Context): Promise<void> {
 }
 
 export async function handleResume(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const history = sessionManager.getSessionHistory(chatId, 10);
+  const history = sessionManager.getSessionHistory(sessionKey, 10);
   // Only show sessions that actually have a Claude session (were chatted in)
   const resumable = history.filter((entry) => entry.claudeSessionId);
 
@@ -1492,26 +1513,27 @@ export async function handleResume(ctx: Context): Promise<void> {
 }
 
 export async function handleResumeCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('resume:')) return;
 
   const conversationId = data.replace('resume:', '');
-  const session = sessionManager.resumeSession(chatId, conversationId);
+  const session = sessionManager.resumeSession(sessionKey, conversationId);
 
   if (!session) {
     await ctx.answerCallbackQuery({ text: 'Session not found' });
     return;
   }
 
-  clearConversation(chatId);
+  clearConversation(sessionKey);
 
   await ctx.answerCallbackQuery({ text: 'Session resumed!' });
   await ctx.editMessageText(
     `✅ Resumed session for *${esc(path.basename(session.workingDirectory))}*\n\n` +
-    `Working directory: \`${esc(session.workingDirectory)}\`${projectStatusSuffix(chatId)}`,
+    `Working directory: \`${esc(session.workingDirectory)}\`${projectStatusSuffix(sessionKey)}`,
     { parse_mode: 'MarkdownV2' }
   );
 
@@ -1522,21 +1544,22 @@ export async function handleResumeCallback(ctx: Context): Promise<void> {
 }
 
 export async function handleContinue(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.resumeLastSession(chatId);
+  const session = sessionManager.resumeLastSession(sessionKey);
 
   if (!session) {
     await replyMd(ctx, 'ℹ️ No previous session to continue\\.\n\nUse `/project <name>` to start a new session\\.');
     return;
   }
 
-  clearConversation(chatId);
+  clearConversation(sessionKey);
 
   await replyMd(ctx,
     `✅ Continuing *${esc(path.basename(session.workingDirectory))}*\n\n` +
-    `Working directory: \`${esc(session.workingDirectory)}\`${projectStatusSuffix(chatId)}`
+    `Working directory: \`${esc(session.workingDirectory)}\`${projectStatusSuffix(sessionKey)}`
   );
 
   // Send session ID as separate message for easy copying
@@ -1546,10 +1569,11 @@ export async function handleContinue(ctx: Context): Promise<void> {
 }
 
 export async function handleLoop(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await replyMd(ctx, '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.');
     return;
@@ -1574,14 +1598,14 @@ export async function handleLoop(ctx: Context): Promise<void> {
   }
 
   try {
-    await queueRequest(chatId, task, async () => {
+    await queueRequest(sessionKey, task, async () => {
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
       try {
-        const response = await sendLoopToAgent(chatId, task, {
+        const response = await sendLoopToAgent(sessionKey, task, {
           onProgress: (progressText) => {
             messageSender.updateStream(ctx, progressText);
           },
@@ -1603,11 +1627,12 @@ export async function handleLoop(ctx: Context): Promise<void> {
 }
 
 export async function handleSessions(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const history = sessionManager.getSessionHistory(chatId, 10);
-  const currentSession = sessionManager.getSession(chatId);
+  const history = sessionManager.getSessionHistory(sessionKey, 10);
+  const currentSession = sessionManager.getSession(sessionKey);
 
   if (history.length === 0 && !currentSession) {
     await replyMd(ctx, 'ℹ️ No sessions found\\.\n\nUse `/project <name>` to start a new session\\.');
@@ -1636,10 +1661,11 @@ export async function handleSessions(ctx: Context): Promise<void> {
 }
 
 export async function handleTeleport(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
 
   if (!session) {
     await replyMd(ctx, 'ℹ️ No active session to teleport\\.\n\nStart a conversation first with `/project <name>`\\.');
@@ -1686,13 +1712,14 @@ function formatTimeAgo(date: Date): string {
 }
 
 export async function handleFile(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const text = ctx.message?.text || '';
   const filePath = text.split(' ').slice(1).join(' ').trim();
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await replyMd(ctx, '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project <path>` to open a project first\\.');
     return;
@@ -1747,15 +1774,16 @@ export async function handleFile(ctx: Context): Promise<void> {
 }
 
 export async function handleTelegraph(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const text = ctx.message?.text || '';
   const filePath = text.split(' ').slice(1).join(' ').trim();
 
   // If no argument provided, show the settings menu
   if (!filePath) {
-    const menu = buildTelegraphMenu(chatId);
+    const menu = buildTelegraphMenu(sessionKey);
     await ctx.reply(menu.text, {
       parse_mode: 'MarkdownV2',
       reply_markup: menu.keyboard.length > 0 ? { inline_keyboard: menu.keyboard } : undefined,
@@ -1763,7 +1791,7 @@ export async function handleTelegraph(ctx: Context): Promise<void> {
     return;
   }
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await replyMd(ctx, '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project <path>` to open a project first\\.');
     return;
@@ -1850,8 +1878,8 @@ function parseRedditArgs(tokens: string[]): {
 }
 
 function ensureRedditOutputDir(ctx: Context): string {
-  const chatId = ctx.chat?.id;
-  const session = chatId ? sessionManager.getSession(chatId) : null;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  const session = keyInfo ? sessionManager.getSession(keyInfo.sessionKey) : null;
   const baseDir = session ? session.workingDirectory : process.cwd();
   const dir = path.join(baseDir, '.claudegram', 'reddit');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1872,8 +1900,8 @@ function slugFromUrl(input: string): string {
 }
 
 function ensureMediumOutputDir(ctx: Context, url: string): string {
-  const chatId = ctx.chat?.id;
-  const session = chatId ? sessionManager.getSession(chatId) : null;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  const session = keyInfo ? sessionManager.getSession(keyInfo.sessionKey) : null;
   const baseDir = session ? session.workingDirectory : process.cwd();
   const slug = slugFromUrl(url);
   const dir = path.join(baseDir, '.claudegram', 'medium', slug);
@@ -2023,8 +2051,9 @@ export async function executeRedditFetch(
  * Handle inline keyboard callbacks for Reddit action picker (File / Chat / Both).
  */
 export async function handleRedditActionCallback(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('reddit_action:')) return;
@@ -2083,7 +2112,7 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
 
     // ── Chat mode ──────────────────────────────────────────────────
     if (doChat) {
-      const session = sessionManager.getSession(chatId);
+      const session = sessionManager.getSession(sessionKey);
       if (!session) {
         await replyMd(ctx, '⚠️ No project set\\. Use `/project` first to enable Chat mode\\.');
       } else {
@@ -2112,13 +2141,13 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
 
         // 3. Queue a streaming response
         try {
-          await queueRequest(chatId, prompt, async () => {
+          await queueRequest(sessionKey, prompt, async () => {
             if (getStreamingMode() === 'streaming') {
               await messageSender.startStreaming(ctx);
               const abortController = new AbortController();
-              setAbortController(chatId, abortController);
+              setAbortController(sessionKey, abortController);
               try {
-                const response = await sendToAgent(chatId, prompt, {
+                const response = await sendToAgent(sessionKey, prompt, {
                   onProgress: (progressText) => {
                     messageSender.updateStream(ctx, progressText);
                   },
@@ -2133,8 +2162,8 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
             } else {
               await ctx.replyWithChatAction('typing');
               const abortController = new AbortController();
-              setAbortController(chatId, abortController);
-              const response = await sendToAgent(chatId, prompt, { abortController });
+              setAbortController(sessionKey, abortController);
+              const response = await sendToAgent(sessionKey, prompt, { abortController });
               await messageSender.sendMessage(ctx, response.text);
               await maybeSendVoiceReply(ctx, response.text);
             }
@@ -2168,8 +2197,8 @@ export async function handleRedditActionCallback(ctx: Context): Promise<void> {
   }
 }
 
-// Pending Freedium results keyed by chatId, with 5-min TTL
-const pendingMediumResults = new Map<number, { article: FreediumArticle; messageId: number; expiresAt: number }>();
+// Pending Freedium results keyed by sessionKey, with 5-min TTL
+const pendingMediumResults = new Map<string, { article: FreediumArticle; messageId: number; expiresAt: number }>();
 const MEDIUM_RESULT_TTL_MS = 5 * 60 * 1000;
 
 // Periodic cleanup of expired pending results to prevent memory leaks.
@@ -2179,8 +2208,8 @@ const _cleanupInterval = setInterval(() => {
   for (const [msgId, entry] of pendingRedditResults) {
     if (now > entry.expiresAt) pendingRedditResults.delete(msgId);
   }
-  for (const [chatId, entry] of pendingMediumResults) {
-    if (now > entry.expiresAt) pendingMediumResults.delete(chatId);
+  for (const [key, entry] of pendingMediumResults) {
+    if (now > entry.expiresAt) pendingMediumResults.delete(key);
   }
 }, REDDIT_RESULT_TTL_MS);
 _cleanupInterval.unref();
@@ -2211,8 +2240,9 @@ export async function executeMediumFetch(
     return;
   }
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   try {
     const article = await fetchMediumArticle(url);
@@ -2251,7 +2281,7 @@ export async function executeMediumFetch(
     });
 
     // Store result for callback handling
-    pendingMediumResults.set(chatId, {
+    pendingMediumResults.set(sessionKey, {
       article,
       messageId: msg.message_id,
       expiresAt: Date.now() + MEDIUM_RESULT_TTL_MS,
@@ -2272,8 +2302,9 @@ export async function handleMediumCallback(ctx: Context): Promise<void> {
     return;
   }
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   const data = ctx.callbackQuery?.data;
   if (!data || !data.startsWith('medium:')) return;
@@ -2281,9 +2312,9 @@ export async function handleMediumCallback(ctx: Context): Promise<void> {
   const action = data.replace('medium:', '');
 
   // Look up pending result
-  const pending = pendingMediumResults.get(chatId);
+  const pending = pendingMediumResults.get(sessionKey);
   if (!pending || Date.now() > pending.expiresAt) {
-    pendingMediumResults.delete(chatId);
+    pendingMediumResults.delete(sessionKey);
     await ctx.answerCallbackQuery({ text: 'Result expired. Please fetch again.' });
     return;
   }
@@ -2342,7 +2373,7 @@ export async function handleMediumCallback(ctx: Context): Promise<void> {
     }
 
     // Clean up pending result
-    pendingMediumResults.delete(chatId);
+    pendingMediumResults.delete(sessionKey);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     await replyMd(ctx, `❌ Action failed: ${esc(message.substring(0, 300))}`);
@@ -2620,16 +2651,16 @@ export async function handleTranscribeDocument(ctx: Context): Promise<void> {
 
 // ── /extract command ───────────────────────────────────────────────
 
-// Store pending extract URLs keyed by chatId so the callback knows what to process
-const pendingExtractUrls = new Map<number, string>();
+// Store pending extract URLs keyed by sessionKey so the callback knows what to process
+const pendingExtractUrls = new Map<string, string>();
 
 // TTLs for cleanup (in ms)
 const EXTRACT_URL_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const PROJECT_BROWSER_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 // Track timestamps for extract URLs and project browser
-const pendingExtractTimestamps = new Map<number, number>();
-const projectBrowserTimestamps = new Map<number, number>();
+const pendingExtractTimestamps = new Map<string, number>();
+const projectBrowserTimestamps = new Map<string, number>();
 
 /**
  * Cleanup interval to prevent memory leaks from unbounded Maps.
@@ -2640,28 +2671,28 @@ const cleanupInterval = setInterval(() => {
   const now = Date.now();
 
   // Clean pendingMediumResults (already has expiresAt field)
-  for (const [chatId, entry] of pendingMediumResults.entries()) {
+  for (const [key, entry] of pendingMediumResults.entries()) {
     if (now > entry.expiresAt) {
-      pendingMediumResults.delete(chatId);
-      console.log(`[cleanup] Removed stale pendingMediumResults for chat ${chatId}`);
+      pendingMediumResults.delete(key);
+      console.log(`[cleanup] Removed stale pendingMediumResults for ${key}`);
     }
   }
 
   // Clean pendingExtractUrls
-  for (const [chatId, timestamp] of pendingExtractTimestamps.entries()) {
+  for (const [key, timestamp] of pendingExtractTimestamps.entries()) {
     if (now - timestamp > EXTRACT_URL_TTL_MS) {
-      pendingExtractUrls.delete(chatId);
-      pendingExtractTimestamps.delete(chatId);
-      console.log(`[cleanup] Removed stale pendingExtractUrls for chat ${chatId}`);
+      pendingExtractUrls.delete(key);
+      pendingExtractTimestamps.delete(key);
+      console.log(`[cleanup] Removed stale pendingExtractUrls for ${key}`);
     }
   }
 
   // Clean projectBrowserState
-  for (const [chatId, timestamp] of projectBrowserTimestamps.entries()) {
+  for (const [key, timestamp] of projectBrowserTimestamps.entries()) {
     if (now - timestamp > PROJECT_BROWSER_TTL_MS) {
-      projectBrowserState.delete(chatId);
-      projectBrowserTimestamps.delete(chatId);
-      console.log(`[cleanup] Removed stale projectBrowserState for chat ${chatId}`);
+      projectBrowserState.delete(key);
+      projectBrowserTimestamps.delete(key);
+      console.log(`[cleanup] Removed stale projectBrowserState for ${key}`);
     }
   }
 }, 60_000);
@@ -2706,8 +2737,9 @@ export async function showExtractMenu(ctx: Context, url: string): Promise<void> 
     return;
   }
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
   if (!isValidUrl(url)) {
     await ctx.reply('\u{274C} Invalid URL\\. Please provide a valid link\\.', { parse_mode: 'MarkdownV2' });
@@ -2726,8 +2758,8 @@ export async function showExtractMenu(ctx: Context, url: string): Promise<void> 
   const label = platformLabel(platform);
 
   // Store URL for callback (with timestamp for cleanup)
-  pendingExtractUrls.set(chatId, url);
-  pendingExtractTimestamps.set(chatId, Date.now());
+  pendingExtractUrls.set(sessionKey, url);
+  pendingExtractTimestamps.set(sessionKey, Date.now());
 
   await ctx.reply(
     `\u{1F4E5} *Extract from ${esc(label)}*\n\n` +
@@ -2759,8 +2791,9 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
   }
 
   const data = ctx.callbackQuery?.data;
-  const chatId = ctx.chat?.id;
-  if (!data || !chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!data || !keyInfo) return;
+  const { chatId, sessionKey } = keyInfo;
 
   // Handle subtitle format selection (extract:subfmt:<format>)
   if (data.startsWith('extract:subfmt:')) {
@@ -2769,15 +2802,15 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
 
     await ctx.answerCallbackQuery();
 
-    const url = pendingExtractUrls.get(chatId);
+    const url = pendingExtractUrls.get(sessionKey);
     if (!url) {
       await ctx.reply('\u{26A0}\u{FE0F} Session expired\\. Please send the URL again with `/extract`\\.', {
         parse_mode: 'MarkdownV2',
       });
       return;
     }
-    pendingExtractUrls.delete(chatId);
-    pendingExtractTimestamps.delete(chatId);
+    pendingExtractUrls.delete(sessionKey);
+    pendingExtractTimestamps.delete(sessionKey);
 
     // Remove the subtitle format menu
     try {
@@ -2796,7 +2829,7 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
 
   await ctx.answerCallbackQuery();
 
-  const url = pendingExtractUrls.get(chatId);
+  const url = pendingExtractUrls.get(sessionKey);
   if (!url) {
     await ctx.reply('\u{26A0}\u{FE0F} Session expired\\. Please send the URL again with `/extract`\\.', {
       parse_mode: 'MarkdownV2',
@@ -2849,8 +2882,8 @@ export async function handleExtractCallback(ctx: Context): Promise<void> {
     return;
   }
 
-  pendingExtractUrls.delete(chatId);
-  pendingExtractTimestamps.delete(chatId);
+  pendingExtractUrls.delete(sessionKey);
+  pendingExtractTimestamps.delete(sessionKey);
 
   // Remove the menu message
   try {

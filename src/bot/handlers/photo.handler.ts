@@ -19,6 +19,7 @@ import { downloadFileSecure, getTelegramFileUrl } from '../../utils/download.js'
 import { sanitizeError } from '../../utils/sanitize.js';
 import { isValidImageFile, getFileType } from '../../utils/file-type.js';
 import { type PhotoSize } from 'grammy/types';
+import { getSessionKeyFromCtx } from '../../utils/session-key.js';
 
 const UPLOADS_DIR = '.claudegram/uploads';
 
@@ -57,10 +58,11 @@ async function handleSavedImage(
   savedPath: string,
   caption?: string
 ): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) return;
 
   const relativePath = path.relative(session.workingDirectory, savedPath);
@@ -77,20 +79,20 @@ async function handleSavedImage(
 
   const agentPrompt = noteLines.join('\n');
 
-  if (isProcessing(chatId)) {
-    const position = getQueuePosition(chatId) + 1;
+  if (isProcessing(sessionKey)) {
+    const position = getQueuePosition(sessionKey) + 1;
     await ctx.reply(`⏳ Queued \(position ${position}\)`, { parse_mode: 'MarkdownV2' });
   }
 
-  await queueRequest(chatId, agentPrompt, async () => {
+  await queueRequest(sessionKey, agentPrompt, async () => {
     if (getStreamingMode() === 'streaming') {
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
       try {
-        const response = await sendToAgent(chatId, agentPrompt, {
+        const response = await sendToAgent(sessionKey, agentPrompt, {
           onProgress: (progressText) => {
             messageSender.updateStream(ctx, progressText);
           },
@@ -105,21 +107,22 @@ async function handleSavedImage(
     } else {
       await ctx.replyWithChatAction('typing');
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
-      const response = await sendToAgent(chatId, agentPrompt, { abortController });
+      const response = await sendToAgent(sessionKey, agentPrompt, { abortController });
       await messageSender.sendMessage(ctx, response.text);
     }
   });
 }
 
 export async function handlePhoto(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
+  const keyInfo = getSessionKeyFromCtx(ctx);
   const messageId = ctx.message?.message_id;
   const messageDate = ctx.message?.date;
   const photos = ctx.message?.photo;
 
-  if (!chatId || !messageId || !messageDate || !photos || photos.length === 0) return;
+  if (!keyInfo || !messageId || !messageDate || !photos || photos.length === 0) return;
+  const { sessionKey } = keyInfo;
 
   if (isStaleMessage(messageDate)) {
     console.log(`[Photo] Ignoring stale photo message ${messageId}`);
@@ -131,7 +134,7 @@ export async function handlePhoto(ctx: Context): Promise<void> {
   }
   markProcessed(messageId);
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -200,12 +203,13 @@ export async function handlePhoto(ctx: Context): Promise<void> {
 }
 
 export async function handleImageDocument(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
+  const keyInfo = getSessionKeyFromCtx(ctx);
   const messageId = ctx.message?.message_id;
   const messageDate = ctx.message?.date;
   const document = ctx.message?.document;
 
-  if (!chatId || !messageId || !messageDate || !document) return;
+  if (!keyInfo || !messageId || !messageDate || !document) return;
+  const { sessionKey } = keyInfo;
 
   // Only handle image documents
   if (!document.mime_type || !document.mime_type.startsWith('image/')) {
@@ -222,7 +226,7 @@ export async function handleImageDocument(ctx: Context): Promise<void> {
   }
   markProcessed(messageId);
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',

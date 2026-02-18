@@ -25,7 +25,7 @@ export interface TerminalUISettings {
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claudegram');
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'terminal-ui-settings.json');
-const chatTerminalSettings: Map<number, TerminalUISettings> = new Map();
+const chatTerminalSettings: Map<string, TerminalUISettings> = new Map();
 
 function ensureDirectory(): void {
   if (!fs.existsSync(SETTINGS_DIR)) {
@@ -54,10 +54,8 @@ function loadSettings(): void {
       return;
     }
 
-    for (const [chatId, settings] of Object.entries(result.data.settings)) {
-      const id = Number(chatId);
-      if (!Number.isFinite(id)) continue;
-      chatTerminalSettings.set(id, normalizeSettings(settings));
+    for (const [key, settings] of Object.entries(result.data.settings)) {
+      chatTerminalSettings.set(key, normalizeSettings(settings));
     }
   } catch (error) {
     console.error('[TerminalUI] Failed to load settings:', error);
@@ -67,8 +65,8 @@ function loadSettings(): void {
 function saveSettings(): void {
   ensureDirectory();
   const settings: Record<string, TerminalUISettings> = {};
-  for (const [chatId, value] of chatTerminalSettings.entries()) {
-    settings[String(chatId)] = value;
+  for (const [key, value] of chatTerminalSettings.entries()) {
+    settings[key] = value;
   }
 
   try {
@@ -80,22 +78,22 @@ function saveSettings(): void {
 
 loadSettings();
 
-export function getTerminalUISettings(chatId: number): TerminalUISettings {
-  const existing = chatTerminalSettings.get(chatId);
+export function getTerminalUISettings(sessionKey: string): TerminalUISettings {
+  const existing = chatTerminalSettings.get(sessionKey);
   if (existing) return existing;
 
   const defaults = normalizeSettings();
-  chatTerminalSettings.set(chatId, defaults);
+  chatTerminalSettings.set(sessionKey, defaults);
   saveSettings();
   return defaults;
 }
 
-export function setTerminalUIEnabled(chatId: number, enabled: boolean): void {
-  const settings = getTerminalUISettings(chatId);
+export function setTerminalUIEnabled(sessionKey: string, enabled: boolean): void {
+  const settings = getTerminalUISettings(sessionKey);
   settings.enabled = enabled;
   saveSettings();
 }
 
-export function isTerminalUIEnabled(chatId: number): boolean {
-  return getTerminalUISettings(chatId).enabled;
+export function isTerminalUIEnabled(sessionKey: string): boolean {
+  return getTerminalUISettings(sessionKey).enabled;
 }

@@ -21,14 +21,16 @@ import { transcribeFile } from '../../audio/transcribe.js';
 import { sendTranscriptResult } from './command.handler.js';
 import { downloadFileSecure, getTelegramFileUrl } from '../../utils/download.js';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
+import { getSessionKeyFromCtx } from '../../utils/session-key.js';
 
 export async function handleVoice(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
+  const keyInfo = getSessionKeyFromCtx(ctx);
   const messageId = ctx.message?.message_id;
   const messageDate = ctx.message?.date;
   const voice = ctx.message?.voice;
 
-  if (!chatId || !messageId || !messageDate || !voice) return;
+  if (!keyInfo || !messageId || !messageDate || !voice) return;
+  const { chatId, sessionKey } = keyInfo;
 
   // Stale/duplicate filters
   if (isStaleMessage(messageDate)) {
@@ -52,7 +54,7 @@ export async function handleVoice(ctx: Context): Promise<void> {
   }
 
   // Check session
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -132,21 +134,21 @@ export async function handleVoice(ctx: Context): Promise<void> {
     }
 
     // Check if already processing - show queue position
-    if (isProcessing(chatId)) {
-      const position = getQueuePosition(chatId) + 1;
+    if (isProcessing(sessionKey)) {
+      const position = getQueuePosition(sessionKey) + 1;
       await ctx.reply(`⏳ Queued \\(position ${position}\\)`, { parse_mode: 'MarkdownV2' });
     }
 
     // Feed transcript into agent
-    await queueRequest(chatId, transcript, async () => {
+    await queueRequest(sessionKey, transcript, async () => {
       if (getStreamingMode() === 'streaming') {
         await messageSender.startStreaming(ctx);
 
         const abortController = new AbortController();
-        setAbortController(chatId, abortController);
+        setAbortController(sessionKey, abortController);
 
         try {
-          const response = await sendToAgent(chatId, transcript, {
+          const response = await sendToAgent(sessionKey, transcript, {
             onProgress: (progressText) => {
               messageSender.updateStream(ctx, progressText);
             },
@@ -163,9 +165,9 @@ export async function handleVoice(ctx: Context): Promise<void> {
         await ctx.replyWithChatAction('typing');
 
         const abortController = new AbortController();
-        setAbortController(chatId, abortController);
+        setAbortController(sessionKey, abortController);
 
-        const response = await sendToAgent(chatId, transcript, { abortController });
+        const response = await sendToAgent(sessionKey, transcript, { abortController });
         await messageSender.sendMessage(ctx, response.text);
         await maybeSendVoiceReply(ctx, response.text);
       }

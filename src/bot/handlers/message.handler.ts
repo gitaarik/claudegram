@@ -23,6 +23,7 @@ import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
+import { getSessionKeyFromCtx } from '../../utils/session-key.js';
 
 async function replyFeatureDisabled(ctx: Context, feature: string): Promise<void> {
   await ctx.reply(`⚠️ ${feature} feature is disabled in configuration.`, { parse_mode: undefined });
@@ -106,11 +107,11 @@ async function sendCompactionNotification(
 
 async function sendSessionInitNotification(
   ctx: Context,
-  chatId: number,
+  sessionKey: string,
   sessionInit: { model: string; sessionId: string } | undefined,
 ): Promise<void> {
   if (!config.CONTEXT_NOTIFY_COMPACTION || !sessionInit) return;
-  const previousSessionId = sessionManager.getSession(chatId)?.claudeSessionId;
+  const previousSessionId = sessionManager.getSession(sessionKey)?.claudeSessionId;
   if (previousSessionId && sessionInit.sessionId !== previousSessionId) {
     const msg = `🔄 *New Agent Session*\n\n`
       + `A new agent session has started \\(previous context may be summarized\\)\\.\n`
@@ -137,12 +138,13 @@ function getAutoVRedditUrl(text: string): string | null {
 }
 
 export async function handleMessage(ctx: Context): Promise<void> {
-  const chatId = ctx.chat?.id;
+  const keyInfo = getSessionKeyFromCtx(ctx);
   const text = ctx.message?.text;
   const messageId = ctx.message?.message_id;
   const messageDate = ctx.message?.date;
 
-  if (!chatId || !text || !messageId || !messageDate) return;
+  if (!keyInfo || !text || !messageId || !messageDate) return;
+  const { chatId, sessionKey } = keyInfo;
 
   // Filter stale messages (sent before bot started)
   if (isStaleMessage(messageDate)) {
@@ -164,37 +166,37 @@ export async function handleMessage(ctx: Context): Promise<void> {
 
     // Handle project path reply
     if (replyText.includes('Set Project Directory')) {
-      await handleProjectReply(ctx, chatId, text);
+      await handleProjectReply(ctx, sessionKey, text);
       return;
     }
 
     // Handle telegraph/instant view reply (check BEFORE file - both have "file path")
     if (replyText.includes('Instant View') || replyText.includes('Markdown files')) {
-      await handleTelegraphReply(ctx, chatId, text);
+      await handleTelegraphReply(ctx, sessionKey, text);
       return;
     }
 
     // Handle file download reply
     if (replyText.includes('Download File')) {
-      await handleFileReply(ctx, chatId, text);
+      await handleFileReply(ctx, sessionKey, text);
       return;
     }
 
     // Handle plan mode reply
     if (replyText.includes('Plan Mode') || replyText.includes('Describe your task')) {
-      await handleAgentReply(ctx, chatId, text, 'plan');
+      await handleAgentReply(ctx, sessionKey, text, 'plan');
       return;
     }
 
     // Handle explore mode reply
     if (replyText.includes('Explore Mode') || replyText.includes('What would you like to know')) {
-      await handleAgentReply(ctx, chatId, text, 'explore');
+      await handleAgentReply(ctx, sessionKey, text, 'explore');
       return;
     }
 
     // Handle loop mode reply
     if (replyText.includes('Loop Mode') || replyText.includes('work iteratively')) {
-      await handleAgentReply(ctx, chatId, text, 'loop');
+      await handleAgentReply(ctx, sessionKey, text, 'loop');
       return;
     }
 
@@ -258,7 +260,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
   }
 
   // Check for active session
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -269,23 +271,23 @@ export async function handleMessage(ctx: Context): Promise<void> {
 
   // If CANCEL_ON_NEW_MESSAGE is enabled, auto-cancel the running query;
   // otherwise queue the new message behind it and show the queue position.
-  if (isProcessing(chatId)) {
+  if (isProcessing(sessionKey)) {
     if (config.CANCEL_ON_NEW_MESSAGE) {
-      await cancelRequest(chatId);
-      clearQueue(chatId);
+      await cancelRequest(sessionKey);
+      clearQueue(sessionKey);
     } else {
-      const position = getQueuePosition(chatId) + 1;
+      const position = getQueuePosition(sessionKey) + 1;
       await ctx.reply(`⏳ Queued \\(position ${position}\\)`, { parse_mode: 'MarkdownV2' });
     }
   }
 
   try {
-    // Queue the request - process one at a time per chat
-    await queueRequest(chatId, text, async () => {
+    // Queue the request - process one at a time per session
+    await queueRequest(sessionKey, text, async () => {
       if (getStreamingMode() === 'streaming') {
-        await handleStreamingResponse(ctx, chatId, text);
+        await handleStreamingResponse(ctx, sessionKey, text);
       } else {
-        await handleWaitResponse(ctx, chatId, text);
+        await handleWaitResponse(ctx, sessionKey, chatId, text);
       }
     });
   } catch (error) {
@@ -299,7 +301,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
 }
 
 // Handle reply to project ForceReply prompt
-async function handleProjectReply(ctx: Context, chatId: number, projectPath: string): Promise<void> {
+async function handleProjectReply(ctx: Context, sessionKey: string, projectPath: string): Promise<void> {
   let resolvedPath = projectPath.trim();
 
   // Handle ~ expansion
@@ -338,26 +340,26 @@ async function handleProjectReply(ctx: Context, chatId: number, projectPath: str
   }
 
   // Set the project
-  sessionManager.setWorkingDirectory(chatId, resolvedPath);
-  clearConversation(chatId);
+  sessionManager.setWorkingDirectory(sessionKey, resolvedPath);
+  clearConversation(sessionKey);
 
   const projectName = path.basename(resolvedPath);
   await ctx.reply(
-    `✅ Project set: *${esc(projectName)}*\n\n\`${esc(resolvedPath)}\`\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(chatId)}`,
+    `✅ Project set: *${esc(projectName)}*\n\n\`${esc(resolvedPath)}\`\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`,
     { parse_mode: 'MarkdownV2' }
   );
 
-  const s = sessionManager.getSession(chatId);
+  const s = sessionManager.getSession(sessionKey);
   if (s?.claudeSessionId) {
     await ctx.reply(resumeCommandMessage(s.claudeSessionId), { parse_mode: 'MarkdownV2' });
   }
 }
 
 // Handle reply to file ForceReply prompt
-async function handleFileReply(ctx: Context, chatId: number, filePath: string): Promise<void> {
+async function handleFileReply(ctx: Context, sessionKey: string, filePath: string): Promise<void> {
   const trimmedPath = filePath.trim();
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -408,11 +410,11 @@ async function handleFileReply(ctx: Context, chatId: number, filePath: string): 
 // Handle reply to plan/explore/loop ForceReply prompts
 async function handleAgentReply(
   ctx: Context,
-  chatId: number,
+  sessionKey: string,
   input: string,
   mode: 'plan' | 'explore' | 'loop'
 ): Promise<void> {
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -431,34 +433,36 @@ async function handleAgentReply(
   }
 
   try {
-    await queueRequest(chatId, trimmedInput, async () => {
+    await queueRequest(sessionKey, trimmedInput, async () => {
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
-      setAbortController(chatId, abortController);
+      setAbortController(sessionKey, abortController);
 
       try {
         let response;
         if (mode === 'loop') {
-          response = await sendLoopToAgent(chatId, trimmedInput, {
+          response = await sendLoopToAgent(sessionKey, trimmedInput, {
             onProgress: (progressText) => {
               messageSender.updateStream(ctx, progressText);
             },
             abortController,
+            telegramCtx: ctx,
           });
         } else {
-          response = await sendToAgent(chatId, trimmedInput, {
+          response = await sendToAgent(sessionKey, trimmedInput, {
             onProgress: (progressText) => {
               messageSender.updateStream(ctx, progressText);
             },
             onToolStart: (toolName, input) => {
-              messageSender.updateToolOperation(chatId, toolName, input, ctx);
+              messageSender.updateToolOperation(sessionKey, toolName, input, ctx);
             },
             onToolEnd: () => {
-              messageSender.clearToolOperation(chatId);
+              messageSender.clearToolOperation(sessionKey);
             },
             abortController,
             command: mode,
+            telegramCtx: ctx,
           });
         }
 
@@ -468,7 +472,7 @@ async function handleAgentReply(
         // Context visibility notifications
         await sendUsageFooter(ctx, response.usage);
         await sendCompactionNotification(ctx, response.compaction);
-        await sendSessionInitNotification(ctx, chatId, response.sessionInit);
+        await sendSessionInitNotification(ctx, sessionKey, response.sessionInit);
       } catch (error) {
         await messageSender.cancelStreaming(ctx);
         throw error;
@@ -482,10 +486,10 @@ async function handleAgentReply(
 }
 
 // Handle reply to telegraph ForceReply prompt
-async function handleTelegraphReply(ctx: Context, chatId: number, filePath: string): Promise<void> {
+async function handleTelegraphReply(ctx: Context, sessionKey: string, filePath: string): Promise<void> {
   const trimmedPath = filePath.trim();
 
-  const session = sessionManager.getSession(chatId);
+  const session = sessionManager.getSession(sessionKey);
   if (!session) {
     await ctx.reply(
       '⚠️ No project set\\.\n\nIf the bot restarted, use `/continue` or `/resume` to restore your last session\\.\nOr use `/project` to open a project first\\.',
@@ -551,26 +555,27 @@ async function handleTelegraphReply(ctx: Context, chatId: number, filePath: stri
 
 async function handleStreamingResponse(
   ctx: Context,
-  chatId: number,
+  sessionKey: string,
   message: string
 ): Promise<void> {
   await messageSender.startStreaming(ctx);
 
   const abortController = new AbortController();
-  setAbortController(chatId, abortController);
+  setAbortController(sessionKey, abortController);
 
   try {
-    const response = await sendToAgent(chatId, message, {
+    const response = await sendToAgent(sessionKey, message, {
       onProgress: (progressText) => {
         messageSender.updateStream(ctx, progressText);
       },
       onToolStart: (toolName, input) => {
-        messageSender.updateToolOperation(chatId, toolName, input, ctx);
+        messageSender.updateToolOperation(sessionKey, toolName, input, ctx);
       },
       onToolEnd: () => {
-        messageSender.clearToolOperation(chatId);
+        messageSender.clearToolOperation(sessionKey);
       },
       abortController,
+      telegramCtx: ctx,
     });
 
     await messageSender.finishStreaming(ctx, response.text);
@@ -579,7 +584,7 @@ async function handleStreamingResponse(
     // Context visibility notifications
     await sendUsageFooter(ctx, response.usage);
     await sendCompactionNotification(ctx, response.compaction);
-    await sendSessionInitNotification(ctx, chatId, response.sessionInit);
+    await sendSessionInitNotification(ctx, sessionKey, response.sessionInit);
   } catch (error) {
     await messageSender.cancelStreaming(ctx);
     throw error;
@@ -588,17 +593,19 @@ async function handleStreamingResponse(
 
 async function handleWaitResponse(
   ctx: Context,
+  sessionKey: string,
   chatId: number,
   message: string
 ): Promise<void> {
   // Start continuous typing indicator (every 4s)
-  const typingInterval = messageSender.startTypingIndicator(ctx.api, chatId);
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  const typingInterval = messageSender.startTypingIndicator(ctx.api, chatId, keyInfo?.threadId);
 
   const abortController = new AbortController();
-  setAbortController(chatId, abortController);
+  setAbortController(sessionKey, abortController);
 
   try {
-    const response = await sendToAgent(chatId, message, { abortController });
+    const response = await sendToAgent(sessionKey, message, { abortController, telegramCtx: ctx });
     messageSender.stopTypingInterval(typingInterval);
 
     await messageSender.sendMessage(ctx, response.text);
@@ -607,7 +614,7 @@ async function handleWaitResponse(
     // Context visibility notifications
     await sendUsageFooter(ctx, response.usage);
     await sendCompactionNotification(ctx, response.compaction);
-    await sendSessionInitNotification(ctx, chatId, response.sessionInit);
+    await sendSessionInitNotification(ctx, sessionKey, response.sessionInit);
   } catch (error) {
     messageSender.stopTypingInterval(typingInterval);
     throw error;

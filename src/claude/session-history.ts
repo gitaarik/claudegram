@@ -22,7 +22,7 @@ const sessionHistoryDataSchema = z.object({
 export type SessionHistoryEntry = z.infer<typeof sessionHistoryEntrySchema>;
 
 interface SessionHistoryData {
-  sessions: Record<number, SessionHistoryEntry[]>; // chatId -> history entries
+  sessions: Record<string, SessionHistoryEntry[]>; // sessionKey -> history entries
 }
 
 const HISTORY_DIR = path.join(os.homedir(), '.claudegram');
@@ -52,13 +52,10 @@ class SessionHistory {
         // Validate with Zod schema
         const result = sessionHistoryDataSchema.safeParse(parsed);
         if (result.success) {
-          // Convert string keys to number keys
+          // Keep string keys as-is (supports both "12345" and "12345:42" formats)
           this.data = { sessions: {} };
           for (const [key, value] of Object.entries(result.data.sessions)) {
-            const chatId = parseInt(key, 10);
-            if (!isNaN(chatId)) {
-              this.data.sessions[chatId] = value;
-            }
+            this.data.sessions[key] = value;
           }
         } else {
           console.warn('[SessionHistory] Invalid data format, starting fresh:', result.error.message);
@@ -80,17 +77,17 @@ class SessionHistory {
   }
 
   saveSession(
-    chatId: number,
+    sessionKey: string,
     conversationId: string,
     projectPath: string,
     lastMessagePreview: string = '',
     claudeSessionId?: string
   ): void {
-    if (!this.data.sessions[chatId]) {
-      this.data.sessions[chatId] = [];
+    if (!this.data.sessions[sessionKey]) {
+      this.data.sessions[sessionKey] = [];
     }
 
-    const history = this.data.sessions[chatId];
+    const history = this.data.sessions[sessionKey];
     const projectName = path.basename(projectPath);
 
     // Check if this conversation already exists
@@ -122,43 +119,42 @@ class SessionHistory {
 
     // Keep only recent history
     if (history.length > MAX_HISTORY_PER_CHAT) {
-      this.data.sessions[chatId] = history.slice(0, MAX_HISTORY_PER_CHAT);
+      this.data.sessions[sessionKey] = history.slice(0, MAX_HISTORY_PER_CHAT);
     }
 
     this.save();
   }
 
-  getHistory(chatId: number, limit: number = 5): SessionHistoryEntry[] {
-    const history = this.data.sessions[chatId] || [];
+  getHistory(sessionKey: string, limit: number = 5): SessionHistoryEntry[] {
+    const history = this.data.sessions[sessionKey] || [];
     return history.slice(0, limit);
   }
 
-  getLastSession(chatId: number): SessionHistoryEntry | undefined {
-    const history = this.data.sessions[chatId];
+  getLastSession(sessionKey: string): SessionHistoryEntry | undefined {
+    const history = this.data.sessions[sessionKey];
     return history?.[0];
   }
 
   getSessionByConversationId(
-    chatId: number,
+    sessionKey: string,
     conversationId: string
   ): SessionHistoryEntry | undefined {
-    const history = this.data.sessions[chatId] || [];
+    const history = this.data.sessions[sessionKey] || [];
     return history.find((entry) => entry.conversationId === conversationId);
   }
 
-  getAllActiveSessions(): Map<number, SessionHistoryEntry> {
-    const active = new Map<number, SessionHistoryEntry>();
-    for (const [chatIdStr, history] of Object.entries(this.data.sessions)) {
-      const chatId = parseInt(chatIdStr, 10);
+  getAllActiveSessions(): Map<string, SessionHistoryEntry> {
+    const active = new Map<string, SessionHistoryEntry>();
+    for (const [key, history] of Object.entries(this.data.sessions)) {
       if (history.length > 0) {
-        active.set(chatId, history[0]);
+        active.set(key, history[0]);
       }
     }
     return active;
   }
 
-  updateLastMessage(chatId: number, conversationId: string, preview: string): void {
-    const history = this.data.sessions[chatId];
+  updateLastMessage(sessionKey: string, conversationId: string, preview: string): void {
+    const history = this.data.sessions[sessionKey];
     if (!history) return;
 
     const entry = history.find((e) => e.conversationId === conversationId);
@@ -169,8 +165,8 @@ class SessionHistory {
     }
   }
 
-  updateClaudeSessionId(chatId: number, conversationId: string, claudeSessionId: string): void {
-    const history = this.data.sessions[chatId];
+  updateClaudeSessionId(sessionKey: string, conversationId: string, claudeSessionId: string): void {
+    const history = this.data.sessions[sessionKey];
     if (!history) return;
 
     const entry = history.find((e) => e.conversationId === conversationId);
@@ -181,8 +177,8 @@ class SessionHistory {
     }
   }
 
-  clearHistory(chatId: number): void {
-    delete this.data.sessions[chatId];
+  clearHistory(sessionKey: string): void {
+    delete this.data.sessions[sessionKey];
     this.save();
   }
 }

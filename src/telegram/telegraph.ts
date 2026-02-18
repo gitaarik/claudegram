@@ -92,14 +92,14 @@ export async function initTelegraph(): Promise<void> {
  * Check if content should use Telegraph (long content or has tables)
  * Returns false if Telegraph is disabled globally or for this chat
  */
-export function shouldUseTelegraph(content: string, chatId?: number): boolean {
+export function shouldUseTelegraph(content: string, sessionKey?: string): boolean {
   // Check if Telegraph is enabled in config (global kill switch)
   if (!config.TELEGRAPH_ENABLED) {
     return false;
   }
 
-  // Check per-chat settings if chatId provided
-  if (chatId !== undefined && !isTelegraphEnabled(chatId)) {
+  // Check per-session settings if sessionKey provided
+  if (sessionKey !== undefined && !isTelegraphEnabled(sessionKey)) {
     return false;
   }
 
@@ -141,6 +141,19 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
   let codeBlockContent = '';
   let inList: 'ul' | 'ol' | null = null;
   let listItems: TelegraphNode[] = [];
+  let pendingParagraphLines: string[] = [];
+  let tableHeaders: string[] = [];
+
+  const flushParagraph = () => {
+    if (pendingParagraphLines.length === 0) return;
+    const children: TelegraphNode[] = [];
+    for (let j = 0; j < pendingParagraphLines.length; j++) {
+      if (j > 0) children.push({ tag: 'br' });
+      children.push(...parseInline(pendingParagraphLines[j]));
+    }
+    nodes.push({ tag: 'p', children });
+    pendingParagraphLines = [];
+  };
 
   const flushList = () => {
     if (inList && listItems.length > 0) {
@@ -150,12 +163,17 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
     }
   };
 
+  const flushAll = () => {
+    flushParagraph();
+    flushList();
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     // Code block handling
     if (line.startsWith('```')) {
-      flushList();
+      flushAll();
       if (inCodeBlock) {
         // End code block
         nodes.push({
@@ -176,43 +194,44 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
       continue;
     }
 
-    // Empty line = paragraph break
+    // Empty line = paragraph break (flush accumulated lines into a <p>)
     if (line.trim() === '') {
-      flushList();
+      flushAll();
       continue;
     }
 
     // Horizontal rule
     if (/^[-*_]{3,}\s*$/.test(line)) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'hr' });
       continue;
     }
 
     // Headers
     if (line.startsWith('#### ')) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'h4', children: parseInline(line.slice(5)) });
       continue;
     }
     if (line.startsWith('### ')) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'h4', children: parseInline(line.slice(4)) });
       continue;
     }
     if (line.startsWith('## ')) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'h3', children: parseInline(line.slice(3)) });
       continue;
     }
     if (line.startsWith('# ')) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'h3', children: parseInline(line.slice(2)) });
       continue;
     }
 
     // Unordered list items
     if (line.match(/^[\s]*[-*+]\s+/)) {
+      flushParagraph();
       if (inList !== 'ul') {
         flushList();
         inList = 'ul';
@@ -225,6 +244,7 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
     // Ordered list items
     const orderedMatch = line.match(/^[\s]*(\d+)\.\s+(.*)$/);
     if (orderedMatch) {
+      flushParagraph();
       if (inList !== 'ol') {
         flushList();
         inList = 'ol';
@@ -235,14 +255,14 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
 
     // Blockquote
     if (line.startsWith('> ')) {
-      flushList();
+      flushAll();
       nodes.push({ tag: 'blockquote', children: parseInline(line.slice(2)) });
       continue;
     }
 
     // Table handling - convert to clean formatted lists instead of fake tables
     if (line.includes('|') && line.trim().startsWith('|')) {
-      flushList();
+      flushAll();
       const cells = line.split('|').filter(c => c.trim()).map(c => c.trim());
 
       // Skip separator rows (e.g., |---|---|)
@@ -256,21 +276,19 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
       const isHeader = nextCells.length > 0 && nextCells.every(c => /^[-:]+$/.test(c));
 
       if (isHeader && cells.length > 0) {
-        // Store headers for subsequent data rows
-        (markdownToNodes as any).__tableHeaders = cells;
+        tableHeaders = cells;
         // Render header as a bold line
         nodes.push({ tag: 'p', children: [{ tag: 'b', children: [cells.join('  ·  ')] }] });
         continue;
       }
 
       // Data row - use stored headers for labeled output
-      const headers: string[] = (markdownToNodes as any).__tableHeaders;
-      if (headers && headers.length > 0 && cells.length > 0) {
+      if (tableHeaders.length > 0 && cells.length > 0) {
         const parts: TelegraphNode[] = [];
         cells.forEach((cell, idx) => {
           if (idx > 0) parts.push('  |  ');
-          if (headers[idx]) {
-            parts.push({ tag: 'b', children: [headers[idx] + ': '] });
+          if (tableHeaders[idx]) {
+            parts.push({ tag: 'b', children: [tableHeaders[idx] + ': '] });
           }
           parts.push(cell);
         });
@@ -282,13 +300,13 @@ function markdownToNodes(markdown: string): TelegraphNode[] {
       continue;
     }
 
-    // Regular paragraph
+    // Regular text line — accumulate into pending paragraph
     flushList();
-    nodes.push({ tag: 'p', children: parseInline(line) });
+    pendingParagraphLines.push(line);
   }
 
-  // Flush any remaining list
-  flushList();
+  // Flush any remaining accumulated content
+  flushAll();
 
   // Close any unclosed code block
   if (inCodeBlock && codeBlockContent) {

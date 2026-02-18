@@ -54,7 +54,7 @@ async function main() {
   // Initialize watchdog
   const watchdog = config.AGENT_WATCHDOG_ENABLED
     ? new AgentWatchdog({
-        chatId: 0, // Debug session
+        chatId: '0', // Debug session
         warnAfterSeconds: config.AGENT_WATCHDOG_WARN_SECONDS,
         logIntervalSeconds: config.AGENT_WATCHDOG_LOG_SECONDS,
         timeoutMs: config.AGENT_QUERY_TIMEOUT_MS > 0 ? config.AGENT_QUERY_TIMEOUT_MS : undefined,
