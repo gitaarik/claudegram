@@ -1,4 +1,4 @@
-import Telegraph from 'telegra.ph';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
@@ -12,8 +12,7 @@ const telegraphAccountSchema = z.object({
   short_name: z.string(),
 });
 
-// Telegraph client singleton
-let telegraphClient: Telegraph | null = null;
+// Telegraph account data (no client needed - using native fetch)
 let telegraphAccount: z.infer<typeof telegraphAccountSchema> | null = null;
 
 // Thresholds for when to use Telegraph vs inline
@@ -22,6 +21,7 @@ const TABLE_PATTERN = /\|.*\|.*\|/; // Detect markdown tables
 
 /**
  * Initialize Telegraph account (creates one if needed)
+ * Uses native fetch instead of telegra.ph library
  */
 export async function initTelegraph(): Promise<void> {
   try {
@@ -39,9 +39,9 @@ export async function initTelegraph(): Promise<void> {
       const result = raw ? telegraphAccountSchema.safeParse(raw) : { success: false as const };
 
       if (result.success) {
-        telegraphClient = new Telegraph(result.data.access_token);
         telegraphAccount = result.data;
         console.log('[Telegraph] Loaded existing account');
+        return;
       } else {
         const reason = 'error' in result ? result.error.message : 'malformed JSON';
         console.warn('[Telegraph] Invalid account file, creating new account:', reason);
@@ -49,29 +49,40 @@ export async function initTelegraph(): Promise<void> {
       }
     }
 
-    if (!telegraphClient) {
-      // Create new account - need empty token first
-      telegraphClient = new Telegraph('');
+    // Create new account using native fetch
+    const response = await fetch('https://api.telegra.ph/createAccount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        short_name: 'Claudegram',
+        author_name: 'Claude Agent',
+        author_url: 'https://github.com/anthropics/claude-code'
+      })
+    });
 
-      const account = await telegraphClient.createAccount(
-        'Claudegram',
-        'Claude Agent',
-        'https://github.com/anthropics/claude-code'
-      );
-
-      telegraphAccount = {
-        access_token: account.access_token!,
-        auth_url: account.auth_url!,
-        short_name: account.short_name
-      };
-
-      // Set the token after creation
-      telegraphClient.token = account.access_token!;
-
-      // Save for future use
-      fs.writeFileSync(accountFile, JSON.stringify(telegraphAccount, null, 2), { mode: 0o600 });
-      console.log('[Telegraph] Created new account');
+    if (!response.ok) {
+      throw new Error(`Telegraph API error: ${response.statusText}`);
     }
+
+    const json = await response.json() as { ok: boolean; result?: { access_token?: string; auth_url?: string; short_name?: string }; error?: string };
+
+    if (!json.ok || !json.result) {
+      throw new Error(json.error || 'Unknown Telegraph API error');
+    }
+
+    if (!json.result.access_token || !json.result.auth_url) {
+      throw new Error('Telegraph API returned incomplete account data');
+    }
+
+    telegraphAccount = {
+      access_token: json.result.access_token,
+      auth_url: json.result.auth_url,
+      short_name: json.result.short_name || 'Claudegram'
+    };
+
+    // Save for future use
+    fs.writeFileSync(accountFile, JSON.stringify(telegraphAccount, null, 2), { mode: 0o600 });
+    console.log('[Telegraph] Created new account');
   } catch (error) {
     console.error('[Telegraph] Failed to initialize:', error);
   }
@@ -106,7 +117,7 @@ export function shouldUseTelegraph(content: string, chatId?: number): boolean {
 }
 
 /**
- * Telegraph Node type - matches the library's Node type
+ * Telegraph Node type - matches the Telegraph API format
  */
 type TelegraphTag = 'a' | 'aside' | 'b' | 'blockquote' | 'br' | 'code' | 'em' |
   'figcaption' | 'figure' | 'h3' | 'h4' | 'hr' | 'i' | 'iframe' | 'img' |
@@ -380,30 +391,72 @@ function parseInline(text: string): TelegraphNode[] {
 }
 
 /**
+ * Create a Telegraph page with a UUID-based title for unguessable URLs
+ * The UUID becomes the URL slug, making pages unguessable
+ */
+async function createPageWithUuidTitle(
+  token: string,
+  displayTitle: string,
+  content: TelegraphNode[]
+): Promise<{ url: string }> {
+  // Use UUID as the actual title to make URL unguessable
+  const uuidTitle = randomUUID();
+
+  // Prepend the display title as an h3 heading in the content
+  const contentWithTitle: TelegraphNode[] = [
+    { tag: 'h3', children: [displayTitle] },
+    ...content
+  ];
+
+  const response = await fetch('https://api.telegra.ph/createPage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      access_token: token,
+      title: uuidTitle,
+      author_name: 'Claude Agent',
+      content: contentWithTitle,
+      return_content: false
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegraph API error: ${response.statusText}`);
+  }
+
+  const json = await response.json() as { ok: boolean; result?: { url?: string }; error?: string };
+
+  if (!json.ok || !json.result || !json.result.url) {
+    throw new Error(json.error || 'Unknown Telegraph API error');
+  }
+
+  return { url: json.result.url };
+}
+
+/**
  * Create a Telegraph page from markdown content
+ * Uses a UUID-based title to prevent URL guessing
  */
 export async function createTelegraphPage(
   title: string,
   markdown: string
 ): Promise<string | null> {
-  if (!telegraphClient || !telegraphAccount) {
+  if (!telegraphAccount) {
     await initTelegraph();
   }
 
-  if (!telegraphClient) {
-    console.error('[Telegraph] Client not initialized');
+  if (!telegraphAccount) {
+    console.error('[Telegraph] Account not initialized');
     return null;
   }
 
   try {
     const content = markdownToNodes(markdown);
 
-    const page = await telegraphClient.createPage(
+    const page = await createPageWithUuidTitle(
+      telegraphAccount.access_token,
       title,
-      content,
-      'Claude Agent',  // authorName
-      undefined,       // authorUrl
-      false            // returnContent
+      content
     );
 
     return page.url;
