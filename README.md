@@ -50,6 +50,11 @@ This is not a simple API wrapper. It's the real Claude Code agent with tool acce
 - Original oversized videos archived locally
 - Large threads auto-export to JSON
 
+### Media Extraction
+- `/extract` — YouTube, Instagram, TikTok video/audio/transcript
+- Text, audio (MP3), video (MP4), or all modes
+- Requires yt-dlp, ffmpeg (system binaries)
+
 ### Medium Integration
 - `/medium` — fetch paywalled articles via Freedium
 - Telegraph Instant View, save as Markdown, or both
@@ -69,7 +74,22 @@ This is not a simple API wrapper. It's the real Claude Code agent with tool acce
 - Telegraph Instant View for long responses & tables
 - Smart chunking that preserves code blocks
 - ForceReply interactive prompts for multi-step commands
+- `/teleport` — fork session to terminal for continued work
 - Inline keyboards for settings (model, mode, TTS, clear)
+
+### Terminal UI
+- Terminal-style display with tool status spinners
+- Shows what Claude is doing in real time
+- Toggle with `/terminalui`
+
+### MCP Tools (Intelligent Routing)
+- Talk naturally — Claude auto-uses the right tools
+- Reddit, Medium, YouTube, project management via MCP
+- No explicit commands needed for common tasks
+
+### Forum Topic Sessions
+- Each forum topic runs as an independent session
+- Work on multiple projects in parallel across topics
 
 ### Image Uploads
 - Send photos or image docs in chat
@@ -132,6 +152,7 @@ Open your bot in Telegram → `/start`
 | `/sessions` | List saved sessions |
 | `/resume` | Pick from recent sessions |
 | `/continue` | Resume most recent session |
+| `/teleport` | Move session to terminal (forked) |
 
 ### Agent Modes
 | Command | Description |
@@ -141,6 +162,7 @@ Open your bot in Telegram → `/start`
 | `/loop` | Run iteratively until task complete |
 | `/model` | Switch Sonnet / Opus / Haiku |
 | `/mode` | Toggle streaming / wait |
+| `/terminalui` | Toggle terminal-style display |
 
 ### Content
 | Command | Description |
@@ -150,6 +172,7 @@ Open your bot in Telegram → `/start`
 | `/medium` | Fetch Medium articles via Freedium |
 | `/file` | Download a project file |
 | `/telegraph` | Toggle Instant View for long responses |
+| `/extract <url>` | Download media from YouTube, TikTok, Instagram |
 
 ### Voice & TTS
 | Command | Description |
@@ -167,6 +190,7 @@ Open your bot in Telegram → `/start`
 | `/restartbot` | Restart the bot |
 | `/cancel` | Cancel current request |
 | `/commands` | Show all commands |
+| `/softreset` | Soft reset (cancel + clear session) |
 
 ---
 
@@ -175,14 +199,17 @@ Open your bot in Telegram → `/start`
 <details>
 <summary><strong>Reddit — <code>/reddit</code> & <code>/vreddit</code></strong></summary>
 
-`/reddit` requires [redditfetch.py](https://github.com/lliWcWill/redditfetch) for text content. `/vreddit` works out of the box (uses Reddit's DASH manifests + ffmpeg).
+`/reddit` is now a pure TypeScript module using Reddit's OAuth2 API directly — no external Python dependency.
 
 ```bash
 # .env
-REDDITFETCH_PATH=/absolute/path/to/redditfetch.py
+REDDIT_CLIENT_ID=your_client_id
+REDDIT_CLIENT_SECRET=your_client_secret
+REDDIT_USERNAME=bot_account
+REDDIT_PASSWORD=bot_password
 ```
 
-Video downloads need `ffmpeg` and `ffprobe` on your PATH (standard on most Linux/macOS systems). Videos over 50 MB are automatically compressed before sending to Telegram.
+Create a "script" app at https://www.reddit.com/prefs/apps/. Use a dedicated bot account — NOT your personal credentials. Video downloads need `ffmpeg` and `ffprobe` on your PATH.
 
 </details>
 
@@ -248,12 +275,17 @@ All config lives in `.env`. See [`.env.example`](.env.example) for the full anno
 | `BOT_NAME` | `Claudegram` | Bot name in system prompt |
 | `STREAMING_MODE` | `streaming` | `streaming` or `wait` |
 | `DANGEROUS_MODE` | `false` | Auto-approve all tool permissions |
+| `CANCEL_ON_NEW_MESSAGE` | `false` | Auto-cancel running query on new message |
+| `CLAUDE_SDK_LOG_LEVEL` | `off` | SDK log level: off, basic, verbose, trace |
 
 ### Reddit
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDDITFETCH_PATH` | — | Path to `redditfetch.py` |
+| `REDDIT_CLIENT_ID` | — | Reddit OAuth2 client ID |
+| `REDDIT_CLIENT_SECRET` | — | Reddit OAuth2 client secret |
+| `REDDIT_USERNAME` | — | Reddit bot account username |
+| `REDDIT_PASSWORD` | — | Reddit bot account password |
 | `REDDIT_VIDEO_MAX_SIZE_MB` | `50` | Max video size before compression |
 | `REDDITFETCH_TIMEOUT_MS` | `30000` | Execution timeout |
 | `REDDITFETCH_JSON_THRESHOLD_CHARS` | `8000` | Auto-switch to JSON output |
@@ -266,6 +298,13 @@ All config lives in `.env`. See [`.env.example`](.env.example) for the full anno
 | `MEDIUM_TIMEOUT_MS` | `15000` | Fetch timeout |
 | `MEDIUM_FILE_THRESHOLD_CHARS` | `8000` | File save threshold |
 
+### Media Extraction
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXTRACT_ENABLED` | `true` | Enable /extract command |
+| `YTDLP_COOKIES_PATH` | — | Netscape cookies.txt for yt-dlp |
+
 ### Voice & TTS
 
 | Variable | Default | Description |
@@ -275,6 +314,7 @@ All config lives in `.env`. See [`.env.example`](.env.example) for the full anno
 | `OPENAI_API_KEY` | — | OpenAI API key for TTS |
 | `TTS_VOICE` | `coral` | Default TTS voice |
 | `TTS_MODEL` | `gpt-4o-mini-tts` | TTS model |
+| `VOICE_SHOW_TRANSCRIPT` | `true` | Show transcript text before agent response |
 
 ---
 
@@ -290,28 +330,47 @@ src/
 │   │   ├── voice.handler.ts       # Voice download, transcription, agent relay
 │   │   └── photo.handler.ts       # Image save + agent notification
 │   └── middleware/
-│       ├── auth.ts                # User whitelist
+│       ├── auth.middleware.ts      # User whitelist + group chat auth
 │       └── stale-filter.ts        # Ignore stale messages on restart
 ├── claude/
 │   ├── agent.ts                   # Claude Agent SDK, session resume, system prompt
+│   ├── mcp-tools.ts              # MCP server: Reddit, Medium, Extract, Telegraph tools
 │   ├── session-manager.ts         # Per-chat session state
+│   ├── session-history.ts         # Session persistence and history
 │   ├── request-queue.ts           # Sequential request queue
-│   └── command-parser.ts          # Help text + command descriptions
+│   ├── command-parser.ts          # Help text + command descriptions
+│   └── agent-watchdog.ts          # Watchdog for long-running agent tasks
 ├── reddit/
+│   ├── redditfetch.ts             # Native TypeScript Reddit client (OAuth2)
 │   └── vreddit.ts                 # Reddit video download + compression pipeline
 ├── medium/
 │   └── freedium.ts                # Freedium article fetcher
+├── media/
+│   └── extract.ts                 # YouTube/TikTok/Instagram extraction (yt-dlp)
 ├── telegram/
 │   ├── message-sender.ts          # Streaming, chunking, Telegraph routing
 │   ├── markdown.ts                # MarkdownV2 escaping
 │   ├── telegraph.ts               # Telegraph Instant View client
+│   ├── telegraph-settings.ts      # Per-chat Telegraph toggle
+│   ├── terminal-renderer.ts       # Terminal-style UI renderer
+│   ├── terminal-settings.ts       # Per-chat terminal UI toggle
 │   └── deduplication.ts           # Message dedup
 ├── tts/
-│   ├── tts.ts                     # TTS provider routing (Groq / OpenAI)
+│   ├── tts.ts                     # TTS provider routing (Groq Orpheus / OpenAI)
 │   ├── tts-settings.ts            # Per-chat voice settings
 │   └── voice-reply.ts             # TTS hook for agent responses
 ├── audio/
 │   └── transcribe.ts              # Shared transcription utilities
+├── utils/
+│   ├── download.ts                # URL download with SSRF protection
+│   ├── sanitize.ts                # Path and error sanitization
+│   ├── workspace-guard.ts         # Workspace boundary enforcement
+│   ├── url-guard.ts               # URL validation (protocol, SSRF)
+│   ├── file-type.ts               # File content validation
+│   ├── caffeinate.ts              # macOS sleep prevention
+│   ├── session-key.ts             # Session key generation (DM + forum topics)
+│   ├── agent-timer.ts             # Agent execution timing
+│   └── debug-agent.ts             # Debug utilities
 ├── config.ts                      # Zod-validated environment config
 └── index.ts                       # Entry point
 ```
