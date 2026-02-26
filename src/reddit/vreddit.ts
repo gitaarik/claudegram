@@ -277,7 +277,7 @@ function resolveDashBaseUrl(dashUrl: string, baseUrl: string): string {
 }
 
 async function downloadFile(url: string, destPath: string, timeoutSec: number): Promise<number> {
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     execFile(
       resolveBin('curl'),
       [
@@ -339,7 +339,7 @@ async function downloadWithYtDlp(url: string, outputPath: string): Promise<numbe
 }
 
 async function mergeVideoAudio(videoPath: string, audioPath: string, outputPath: string): Promise<void> {
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     execFile(
       resolveBin('ffmpeg'),
       ['-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', '-movflags', '+faststart', outputPath],
@@ -357,7 +357,7 @@ async function mergeVideoAudio(videoPath: string, audioPath: string, outputPath:
 }
 
 async function getVideoDuration(filePath: string): Promise<number> {
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     execFile(
       resolveBin('ffprobe'),
       ['-i', filePath, '-show_entries', 'format=duration', '-v', 'quiet', '-of', 'csv=p=0'],
@@ -380,9 +380,9 @@ async function getVideoDuration(filePath: string): Promise<number> {
 }
 
 async function compressCrf(inputPath: string, outputPath: string): Promise<number> {
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     execFile(
-      'ffmpeg',
+      resolveBin('ffmpeg'),
       [
         '-y', '-i', inputPath,
         '-c:v', 'libx264', '-crf', '28', '-preset', 'medium',
@@ -426,7 +426,7 @@ async function compressTwoPass(
   // Pass 1
   await new Promise<void>((resolve, reject) => {
     execFile(
-      'ffmpeg',
+      resolveBin('ffmpeg'),
       [
         '-y', '-i', inputPath,
         '-c:v', 'libx264', '-b:v', `${videoBitrateKbps}k`,
@@ -447,9 +447,9 @@ async function compressTwoPass(
   });
 
   // Pass 2
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     execFile(
-      'ffmpeg',
+      resolveBin('ffmpeg'),
       [
         '-y', '-i', inputPath,
         '-c:v', 'libx264', '-b:v', `${videoBitrateKbps}k`,

@@ -12,11 +12,9 @@ const isWin = process.platform === 'win32';
  */
 function isValidExecutable(filePath: string): boolean {
   try {
-    // Resolve symlinks first, then validate the target
     const resolved = fs.realpathSync(filePath);
     const stats = fs.statSync(resolved);
     if (!stats.isFile()) return false;
-    // On non-Windows, check executable bit
     if (!isWin && !(stats.mode & 0o111)) return false;
     return true;
   } catch {
@@ -28,14 +26,16 @@ function getSearchDirs(): string[] {
   const home = os.homedir();
 
   switch (process.platform) {
+    case 'win32':
+      return [];
     case 'darwin':
       return [
-        '/opt/homebrew/bin',        // Apple Silicon Homebrew
-        '/usr/local/bin',           // Intel Homebrew
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
         '/usr/bin',
         path.join(home, '.local', 'bin'),
       ];
-    default: // linux, freebsd, etc.
+    default:
       return [
         path.join(home, '.local', 'bin'),
         '/usr/local/bin',
@@ -66,7 +66,6 @@ export function resolveBin(name: string): string {
     cache.delete(name);
   }
 
-  // Try the platform's lookup command first (works when PATH is correct)
   try {
     const cmd = isWin ? 'where' : 'which';
     const result = execFileSync(cmd, [name], { encoding: 'utf8', timeout: 3000 }).trim();
@@ -75,9 +74,10 @@ export function resolveBin(name: string): string {
       cache.set(name, resolved);
       return resolved;
     }
-  } catch { /* lookup failed or not found */ }
+  } catch {
+    // Lookup failed or binary not found in PATH
+  }
 
-  // Check platform-specific directories
   for (const dir of SEARCH_DIRS) {
     const fullPath = path.join(dir, name);
     if (isValidExecutable(fullPath)) {
@@ -86,6 +86,6 @@ export function resolveBin(name: string): string {
     }
   }
 
-  // Fall back to bare name (let execFile try PATH as last resort)
+  // Fall back to bare name and let execFile resolve via PATH
   return name;
 }
