@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { sessionManager } from '../claude/session-manager.js';
 import { userPreferences } from './user-preferences.js';
 import { BoundedMap } from '../utils/bounded-map.js';
+import { parseSessionKey } from '../utils/session-key.js';
 import type { Provider, AgentOptions, LoopOptions, AgentResponse, AgentUsage, ModelInfo } from './types.js';
 
 // Lazy-loaded SDK types — only resolved when this provider is activated
@@ -272,7 +273,7 @@ export const opencodeProvider: Provider = {
   name: 'opencode',
 
   async sendToAgent(sessionKey: string, message: string, options?: AgentOptions): Promise<AgentResponse> {
-    const chatId = Number(sessionKey.split(':')[0]);
+    const chatId = parseSessionKey(sessionKey).chatId;
     const { onProgress, onToolStart, onToolEnd, abortController } = options || {};
     const c = await getClient();
     const sessionId = await ensureSession(chatId);
@@ -441,7 +442,7 @@ export const opencodeProvider: Provider = {
   },
 
   clearConversation(sessionKey: string): void {
-    const chatId = Number(sessionKey.split(':')[0]);
+    const chatId = parseSessionKey(sessionKey).chatId;
     chatSessionIds.delete(chatId);
     chatUsageCache.delete(chatId);
   },
@@ -469,7 +470,7 @@ export const opencodeProvider: Provider = {
   },
 
   getCachedUsage(sessionKey: string): AgentUsage | undefined {
-    const chatId = Number(sessionKey.split(':')[0]);
+    const chatId = parseSessionKey(sessionKey).chatId;
     return chatUsageCache.get(chatId);
   },
 

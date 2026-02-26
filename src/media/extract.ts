@@ -6,6 +6,7 @@ import { config } from '../config.js';
 import { transcribeFile } from '../audio/transcribe.js';
 import { sanitizeError, sanitizePath } from '../utils/sanitize.js';
 import { isUrlAllowed } from '../utils/url-guard.js';
+import { resolveBin } from '../utils/resolve-bin.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -171,7 +172,7 @@ async function runYtDlp(
   const args = [...baseArgs, ...getCookieArgs(), '--', url];
 
   try {
-    return await runCommand('yt-dlp', args, timeoutMs);
+    return await runCommand(resolveBin('yt-dlp'), args, timeoutMs);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : '';
 
@@ -180,7 +181,7 @@ async function runYtDlp(
       if (proxy) {
         console.log(`[extract] Retrying with proxy after: ${errMsg.slice(0, 100)}`);
         onRetry?.('\u{1F310} Retrying with proxy...');
-        return await runCommand('yt-dlp', [...baseArgs, ...getCookieArgs(), '--proxy', proxy, '--', url], timeoutMs);
+        return await runCommand(resolveBin('yt-dlp'), [...baseArgs, ...getCookieArgs(), '--proxy', proxy, '--', url], timeoutMs);
       }
     }
 
@@ -334,7 +335,7 @@ function vttToPlainText(vttContent: string): string {
 // ── Audio Duration ─────────────────────────────────────────────────
 
 async function getAudioDuration(filePath: string): Promise<number> {
-  const { stdout } = await runCommand('ffprobe', [
+  const { stdout } = await runCommand(resolveBin('ffprobe'), [
     '-i', filePath,
     '-show_entries', 'format=duration',
     '-v', 'quiet',
@@ -367,7 +368,7 @@ async function chunkAudio(
     const startSec = i * chunkDurationSec;
     const chunkPath = path.join(outputDir, `chunk_${i}.mp3`);
 
-    await runCommand('ffmpeg', [
+    await runCommand(resolveBin('ffmpeg'), [
       '-y',
       '-i', inputPath,
       '-ss', String(startSec),

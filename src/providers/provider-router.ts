@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { claudeProvider } from './claude-provider.js';
 import { userPreferences } from './user-preferences.js';
+import { parseSessionKey } from '../utils/session-key.js';
 import type { Provider, ProviderName, AgentOptions, LoopOptions, AgentResponse, AgentUsage, ModelInfo } from './types.js';
 
 // Re-export types for consumers
@@ -84,7 +85,7 @@ export async function sendToAgent(
   message: string,
   options?: AgentOptions
 ): Promise<AgentResponse> {
-  const chatId = Number(sessionKey.split(':')[0]);
+  const chatId = parseSessionKey(sessionKey).chatId;
   return getProvider(chatId).sendToAgent(sessionKey, message, options);
 }
 
@@ -93,7 +94,7 @@ export async function sendLoopToAgent(
   message: string,
   options?: LoopOptions
 ): Promise<AgentResponse> {
-  const chatId = Number(sessionKey.split(':')[0]);
+  const chatId = parseSessionKey(sessionKey).chatId;
   return getProvider(chatId).sendLoopToAgent(sessionKey, message, options);
 }
 
@@ -118,7 +119,7 @@ export function clearModel(chatId: number): void {
 }
 
 export function getCachedUsage(sessionKey: string): AgentUsage | undefined {
-  const chatId = Number(sessionKey.split(':')[0]);
+  const chatId = parseSessionKey(sessionKey).chatId;
   return getProvider(chatId).getCachedUsage(sessionKey);
 }
 

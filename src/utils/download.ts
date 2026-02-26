@@ -1,4 +1,5 @@
 import { spawn, execFile } from 'child_process';
+import { resolveBin } from './resolve-bin.js';
 
 /**
  * Validate URL for safe curl download.
@@ -31,7 +32,7 @@ export function downloadFileSecure(fileUrl: string, destPath: string): Promise<v
     // Use execFile (not spawn with shell) with URL as explicit argument.
     // This avoids shell injection entirely.
     execFile(
-      'curl',
+      resolveBin('curl'),
       [
         '-sS',
         '-f',
