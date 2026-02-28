@@ -34,6 +34,8 @@ interface StreamState {
   spinnerInterval: NodeJS.Timeout | null;
   currentOperation: ToolOperation | null;
   backgroundTasks: Array<{ name: string; status: 'running' | 'complete' | 'error' }>;
+  // Completion notification
+  startTime: number;
   rateLimitedUntil: number;
 }
 
@@ -191,6 +193,8 @@ export class MessageSender {
       spinnerInterval: null,
       currentOperation: null,
       backgroundTasks: [],
+      // Completion notification
+      startTime: Date.now(),
       rateLimitedUntil: 0,
     };
 
@@ -458,9 +462,37 @@ export class MessageSender {
           console.error('Error finishing stream:', error);
         }
       }
+
+      // Send self-deleting completion notification for long-running tasks
+      await this.maybeNotifyCompletion(ctx, state);
     }
 
     this.streamStates.delete(sessionKey);
+  }
+
+  /**
+   * Send a brief notification and immediately delete it to trigger a Telegram ping.
+   * Only fires if the task exceeded COMPLETION_NOTIFY_THRESHOLD_SECONDS.
+   */
+  private async maybeNotifyCompletion(ctx: Context, state: StreamState): Promise<void> {
+    const threshold = config.COMPLETION_NOTIFY_THRESHOLD_SECONDS;
+    if (threshold <= 0) return; // Disabled
+
+    const elapsedSeconds = (Date.now() - state.startTime) / 1000;
+    if (elapsedSeconds < threshold) return;
+
+    try {
+      const notification = await ctx.reply('✓');
+      // Delete after a brief delay to ensure notification is delivered
+      setTimeout(async () => {
+        try {
+          await ctx.api.deleteMessage(state.chatId, notification.message_id);
+        } catch { /* ignore */ }
+      }, 1000);
+    } catch (error) {
+      // Non-critical, ignore failures
+      console.debug('[Notification] Failed to send completion ping:', error);
+    }
   }
 
   async cancelStreaming(ctx: Context): Promise<void> {

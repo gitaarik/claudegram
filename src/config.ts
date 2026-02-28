@@ -208,6 +208,12 @@ const envSchema = z.object({
     .string()
     .default('2000')
     .transform((val) => parseInt(val, 10)),
+  // Completion notification: send a self-deleting ping when long tasks finish
+  // (triggers Telegram notification since edits don't notify)
+  COMPLETION_NOTIFY_THRESHOLD_SECONDS: z
+    .string()
+    .default('10')
+    .transform((val) => parseInt(val, 10)), // 0 = disabled
   // OpenCode provider integration
   OPENCODE_ENABLED: z
     .string()
