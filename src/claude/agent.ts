@@ -2,6 +2,7 @@ import {
   query,
   type SDKMessage,
   type SDKResultMessage,
+  type SDKResultError,
   type SDKCompactBoundaryMessage,
   type SDKStatusMessage,
   type SDKSystemMessage,
@@ -247,6 +248,41 @@ function getPermissionMode(command?: string): PermissionMode {
 /**
  * Log operations when DANGEROUS_MODE is enabled for security auditing.
  */
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Detect transient API errors that are worth auto-retrying.
+ */
+function isTransientApiError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /API Error: (429|500|502|503|529)\b/.test(msg)
+    || /overloaded/i.test(msg);
+}
+
+/**
+ * Convert raw API/SDK errors into user-friendly messages.
+ */
+function friendlyApiError(error: unknown): string {
+  const msg = error instanceof Error ? error.message : String(error);
+
+  if (/API Error: (500|502|503)\b/.test(msg)) {
+    return 'The Anthropic API is temporarily unavailable. Please try again in a moment.';
+  }
+  if (/API Error: 529\b/.test(msg) || /overloaded/i.test(msg)) {
+    return 'The Anthropic API is currently overloaded. Please try again in a few minutes.';
+  }
+  if (/API Error: 429\b/.test(msg) || /rate.?limit/i.test(msg)) {
+    return 'Rate limited by the Anthropic API. Please wait a moment and try again.';
+  }
+  if (/API Error: 40[13]\b/.test(msg)) {
+    return 'API authentication failed. Check your API key configuration.';
+  }
+  if (/API Error: 408\b/.test(msg) || /timeout/i.test(msg)) {
+    return 'The API request timed out. Please try again.';
+  }
+  return msg;
+}
+
 function logDangerousModeOperation(sessionKey: string, operation: string, details?: string): void {
   if (!config.DANGEROUS_MODE) return;
   const timestamp = new Date().toISOString();
@@ -257,7 +293,8 @@ function logDangerousModeOperation(sessionKey: string, operation: string, detail
 export async function sendToAgent(
   sessionKey: string,
   message: string,
-  options: AgentOptions = {}
+  options: AgentOptions = {},
+  _retryCount = 0,
 ): Promise<AgentResponse> {
   const { onProgress, onToolStart, onToolEnd, abortController, command, model } = options;
 
@@ -303,11 +340,10 @@ export async function sendToAgent(
   // Initialize timer for tracking query duration (watchdog created inside try with controller)
   const timer = createAgentTimer();
   let watchdog: AgentWatchdog | null = null;
+  const existingSessionId = chatSessionIds.get(sessionKey) || session.claudeSessionId;
 
   try {
     const controller = abortController || new AbortController();
-
-    const existingSessionId = chatSessionIds.get(sessionKey) || session.claudeSessionId;
 
     // Log session resume if applicable
     if (existingSessionId) {
@@ -319,11 +355,11 @@ export async function sendToAgent(
 
     const toolsOption = config.DANGEROUS_MODE
       ? { type: 'preset' as const, preset: 'claude_code' as const }
-      : ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task'];
+      : ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task', 'WebFetch', 'WebSearch'];
 
     const allowedToolsOption = config.DANGEROUS_MODE
       ? undefined
-      : ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task'];
+      : ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Task', 'WebFetch', 'WebSearch'];
 
     // PreCompact hook always registered (logging only — notification sent from compact_boundary message)
     const preCompactHook: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {
@@ -598,7 +634,24 @@ export async function sendToAgent(
           }
           logAt('basic', `[Claude] Cleared stale session for session ${sessionKey} due to ${responseMessage.subtype}`);
 
-          fullText = `Error: ${responseMessage.subtype}`;
+          // Extract error details from SDK result
+          const errorResult = responseMessage as SDKResultError;
+          const errorDetails = errorResult.errors?.length
+            ? errorResult.errors.join('\n')
+            : '';
+          const deniedTools = errorResult.permission_denials?.length
+            ? errorResult.permission_denials.map(d => d.tool_name).join(', ')
+            : '';
+
+          let errorMsg = `Error: ${responseMessage.subtype}`;
+          if (errorDetails) {
+            errorMsg += `\n\n${errorDetails}`;
+          }
+          if (deniedTools) {
+            errorMsg += `\n\nPermission denied for: ${deniedTools}`;
+          }
+
+          fullText = errorMsg;
           onProgress?.(fullText);
         }
       }
@@ -617,9 +670,30 @@ export async function sendToAgent(
     if (gotResult && error instanceof Error && error.message.includes('exited with code')) {
       console.log('[Claude] Ignoring exit code error after successful result');
     } else {
-      console.error('[Claude] Full error:', error);
+      // Clear stale session ID so next attempt starts fresh
+      chatSessionIds.delete(sessionKey);
+      const errSession = sessionManager.getSession(sessionKey);
+      if (errSession) {
+        errSession.claudeSessionId = undefined;
+      }
+      logAt('basic', `[Claude] Cleared session for ${sessionKey} due to exception`);
+
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Claude error: ${errorMessage}`);
+
+      // Auto-retry on transient API errors (500, 502, 503, 529, 429)
+      if (isTransientApiError(error) && _retryCount < config.API_RETRY_MAX_ATTEMPTS) {
+        const totalAttempts = config.API_RETRY_MAX_ATTEMPTS + 1;
+        const nextAttempt = _retryCount + 2;
+        const delayMs = config.API_RETRY_BASE_DELAY_MS * Math.pow(2, _retryCount);
+        const delaySec = Math.round(delayMs / 1000);
+        logAt('basic', `[Claude] Transient API error for ${sessionKey}, retry ${nextAttempt}/${totalAttempts} in ${delayMs}ms: ${errorMessage}`);
+        onProgress?.(`⚠️ API temporarily unavailable — retrying in ${delaySec}s (attempt ${nextAttempt}/${totalAttempts})…`);
+        await sleep(delayMs);
+        return sendToAgent(sessionKey, message, options, _retryCount + 1);
+      }
+
+      console.error('[Claude] Full error:', error);
+      throw new Error(friendlyApiError(error));
     }
   } finally {
     watchdog?.stop();

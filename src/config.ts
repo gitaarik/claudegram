@@ -199,6 +199,15 @@ const envSchema = z.object({
     .string()
     .default('0')
     .transform((val) => parseInt(val, 10)), // 0 = disabled
+  // API retry: auto-retry on transient API errors (500, 502, 503, 529, 429)
+  API_RETRY_MAX_ATTEMPTS: z
+    .string()
+    .default('2')
+    .transform((val) => parseInt(val, 10)),
+  API_RETRY_BASE_DELAY_MS: z
+    .string()
+    .default('2000')
+    .transform((val) => parseInt(val, 10)),
   // OpenCode provider integration
   OPENCODE_ENABLED: z
     .string()
