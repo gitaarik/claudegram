@@ -434,6 +434,7 @@ async function handleAgentReply(
 
   try {
     await queueRequest(sessionKey, trimmedInput, async () => {
+      const startTime = Date.now();
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
@@ -468,6 +469,9 @@ async function handleAgentReply(
 
         await messageSender.finishStreaming(ctx, response.text);
         await maybeSendVoiceReply(ctx, response.text);
+
+        // Completion notification for long tasks
+        await messageSender.sendCompletionNotification(ctx, Date.now() - startTime);
 
         // Context visibility notifications
         await sendUsageFooter(ctx, response.usage);
@@ -558,6 +562,7 @@ async function handleStreamingResponse(
   sessionKey: string,
   message: string
 ): Promise<void> {
+  const startTime = Date.now();
   await messageSender.startStreaming(ctx);
 
   const abortController = new AbortController();
@@ -580,6 +585,9 @@ async function handleStreamingResponse(
 
     await messageSender.finishStreaming(ctx, response.text);
     await maybeSendVoiceReply(ctx, response.text);
+
+    // Completion notification for long tasks (streaming edits don't trigger push notifications)
+    await messageSender.sendCompletionNotification(ctx, Date.now() - startTime);
 
     // Context visibility notifications
     await sendUsageFooter(ctx, response.usage);

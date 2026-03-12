@@ -19,6 +19,13 @@ export interface AgentResponse {
   sessionInit?: { model: string; sessionId: string };
 }
 
+export interface ImageAttachment {
+  /** Base64-encoded image data (no data URL prefix) */
+  data: string;
+  /** MIME type, e.g. "image/jpeg", "image/png" */
+  mediaType: string;
+}
+
 export interface AgentOptions {
   onProgress?: (text: string) => void;
   onToolStart?: (toolName: string, input?: Record<string, unknown>) => void;
@@ -28,6 +35,8 @@ export interface AgentOptions {
   model?: string;
   /** Telegram context passed through for MCP tools (Claude provider only) */
   telegramCtx?: unknown;
+  /** Optional image attachments to send as multimodal vision input */
+  images?: ImageAttachment[];
 }
 
 export interface LoopOptions extends AgentOptions {

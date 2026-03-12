@@ -491,6 +491,26 @@ export class MessageSender {
     this.streamStates.delete(sessionKey);
   }
 
+  /**
+   * Send a brief new message to trigger a push notification after a long task.
+   * Telegram only notifies on new messages, not edits — so streaming mode
+   * needs this to alert the user when a long task finishes.
+   */
+  async sendCompletionNotification(ctx: Context, elapsedMs: number): Promise<void> {
+    if (!config.NOTIFICATION_ENABLED) return;
+    if (elapsedMs < config.NOTIFICATION_THRESHOLD_SECONDS * 1000) return;
+
+    try {
+      const seconds = Math.round(elapsedMs / 1000);
+      const duration = seconds >= 60
+        ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+        : `${seconds}s`;
+      await ctx.reply(`✅ Done (${duration})`, { parse_mode: undefined });
+    } catch (error) {
+      console.error('[Notification] Failed to send completion notification:', error);
+    }
+  }
+
   // Send typing indicator for a specific chat (useful for long operations)
   async sendTyping(ctx: Context): Promise<void> {
     try {

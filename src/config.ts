@@ -199,6 +199,12 @@ const envSchema = z.object({
     .string()
     .default('0')
     .transform((val) => parseInt(val, 10)), // 0 = disabled
+  // Completion notification (send a new message after long streaming tasks)
+  NOTIFICATION_ENABLED: z.string().default('true').transform(toBool),
+  NOTIFICATION_THRESHOLD_SECONDS: z
+    .string()
+    .default('60')
+    .transform((val) => parseInt(val, 10)),
   // OpenCode provider integration
   OPENCODE_ENABLED: z
     .string()

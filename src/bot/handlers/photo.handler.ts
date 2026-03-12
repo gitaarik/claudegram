@@ -2,7 +2,7 @@ import { Context } from 'grammy';
 import * as fs from 'fs';
 import * as path from 'path';
 import { config } from '../../config.js';
-import { sendToAgent } from '../../claude/agent.js';
+import { sendToAgent } from '../../providers/provider-router.js';
 import { sessionManager } from '../../claude/session-manager.js';
 import { messageSender } from '../../telegram/message-sender.js';
 import { isDuplicate, markProcessed } from '../../telegram/deduplication.js';
@@ -53,6 +53,18 @@ async function downloadTelegramFile(ctx: Context, fileId: string, destPath: stri
   return file.file_path;
 }
 
+function getMediaType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  return mimeTypes[ext] || 'image/jpeg';
+}
+
 async function handleSavedImage(
   ctx: Context,
   savedPath: string,
@@ -73,11 +85,16 @@ async function handleSavedImage(
     `Saved at: ${savedPath}`,
     `Relative path: ${relativePath}`,
     captionText ? `Caption: "${captionText}"` : 'Caption: (none)',
-    'If the caption includes a question or request, answer it. Otherwise, acknowledge briefly and ask if they want any analysis or edits.',
-    'You can inspect the image with tools if needed (e.g. Python + PIL).',
+    'The image is attached as a vision input — you can see it directly.',
+    'If the caption includes a question or request, answer it. Otherwise, describe what you see and ask if they want any analysis or edits.',
   ];
 
   const agentPrompt = noteLines.join('\n');
+
+  // Read image as base64 for multimodal vision input
+  const imageBase64 = fs.readFileSync(savedPath).toString('base64');
+  const mediaType = getMediaType(savedPath);
+  const images = [{ data: imageBase64, mediaType }];
 
   if (isProcessing(sessionKey)) {
     const position = getQueuePosition(sessionKey) + 1;
@@ -86,6 +103,7 @@ async function handleSavedImage(
 
   await queueRequest(sessionKey, agentPrompt, async () => {
     if (getStreamingMode() === 'streaming') {
+      const startTime = Date.now();
       await messageSender.startStreaming(ctx);
 
       const abortController = new AbortController();
@@ -97,9 +115,12 @@ async function handleSavedImage(
             messageSender.updateStream(ctx, progressText);
           },
           abortController,
+          images,
+          telegramCtx: ctx,
         });
 
         await messageSender.finishStreaming(ctx, response.text);
+        await messageSender.sendCompletionNotification(ctx, Date.now() - startTime);
       } catch (error) {
         await messageSender.cancelStreaming(ctx);
         throw error;
@@ -109,7 +130,11 @@ async function handleSavedImage(
       const abortController = new AbortController();
       setAbortController(sessionKey, abortController);
 
-      const response = await sendToAgent(sessionKey, agentPrompt, { abortController });
+      const response = await sendToAgent(sessionKey, agentPrompt, {
+        abortController,
+        images,
+        telegramCtx: ctx,
+      });
       await messageSender.sendMessage(ctx, response.text);
     }
   });

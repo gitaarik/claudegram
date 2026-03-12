@@ -1,6 +1,7 @@
 import {
   query,
   type SDKMessage,
+  type SDKUserMessage,
   type SDKResultMessage,
   type SDKCompactBoundaryMessage,
   type SDKStatusMessage,
@@ -29,7 +30,7 @@ import {
 import { userPreferences } from '../providers/user-preferences.js';
 import { BoundedMap } from '../utils/bounded-map.js';
 
-import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions } from '../providers/types.js';
+import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions, ImageAttachment } from '../providers/types.js';
 export type { AgentUsage };
 
 interface ConversationMessage {
@@ -51,6 +52,43 @@ const chatUsageCache = new BoundedMap<string, AgentUsage>(1000);
 
 export function getCachedUsage(sessionKey: string): AgentUsage | undefined {
   return chatUsageCache.get(sessionKey);
+}
+
+/**
+ * Build a multimodal prompt with image content blocks for the Claude SDK.
+ * The SDK accepts `prompt: string | AsyncIterable<SDKUserMessage>`.
+ * When images are attached, we use the AsyncIterable form to send
+ * content blocks (image + text) in a single user message.
+ */
+async function* buildMultimodalPrompt(
+  text: string,
+  images: ImageAttachment[],
+  sessionId?: string,
+): AsyncGenerator<SDKUserMessage> {
+  const contentBlocks: Array<
+    | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+    | { type: 'text'; text: string }
+  > = [];
+
+  for (const img of images) {
+    contentBlocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.data,
+      },
+    });
+  }
+
+  contentBlocks.push({ type: 'text', text });
+
+  yield {
+    type: 'user',
+    message: { role: 'user', content: contentBlocks },
+    parent_tool_use_id: null,
+    session_id: sessionId || '',
+  } as SDKUserMessage;
 }
 
 const CORE_GUIDELINES = `You are ${config.BOT_NAME}, an AI assistant helping via Telegram.
@@ -259,7 +297,7 @@ export async function sendToAgent(
   message: string,
   options: AgentOptions = {}
 ): Promise<AgentResponse> {
-  const { onProgress, onToolStart, onToolEnd, abortController, command, model } = options;
+  const { onProgress, onToolStart, onToolEnd, abortController, command, model, images } = options;
 
   const session = sessionManager.getSession(sessionKey);
 
@@ -441,8 +479,12 @@ export async function sendToAgent(
       },
     };
 
+    const multimodalPrompt = images?.length
+      ? buildMultimodalPrompt(prompt, images, existingSessionId)
+      : undefined;
+
     const response = query({
-      prompt,
+      prompt: multimodalPrompt || prompt,
       options: queryOptions,
     });
 
