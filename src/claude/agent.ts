@@ -518,7 +518,9 @@ export async function sendToAgent(
       // Check for abort
       if (controller.signal.aborted) {
         watchdog?.stop();
-        fullText = '🛑 Request cancelled.';
+        fullText = isCancelled(sessionKey)
+          ? '🛑 Request cancelled.'
+          : '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.';
         break;
       }
 
@@ -648,9 +650,16 @@ export async function sendToAgent(
   } catch (error) {
     watchdog?.stop();
     // If cancelled via /cancel or /reset, return clean message
-    if (isCancelled(sessionKey) || abortController?.signal.aborted) {
+    if (isCancelled(sessionKey)) {
       return {
         text: '✅ Successfully cancelled - no tools or agents in process.',
+        toolsUsed,
+      };
+    }
+    // Watchdog timeout (not user-initiated)
+    if (abortController?.signal.aborted) {
+      return {
+        text: '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.',
         toolsUsed,
       };
     }
