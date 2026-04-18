@@ -53,6 +53,8 @@ import {
   handleRedditActionCallback,
   handleReset,
   handleResetCallback,
+  handleBotName,
+  handleBotNameCallback,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -132,6 +134,7 @@ export async function createBot(): Promise<Bot> {
     ...(config.OPENCODE_ENABLED ? [{ command: 'provider', description: '🔌 Switch AI provider' }] : []),
     { command: 'mode', description: '⚙️ Toggle streaming mode' },
     { command: 'terminalui', description: '🖥️ Toggle terminal-style display' },
+    { command: 'botname', description: '✏️ Toggle dynamic bot name' },
     { command: 'tts', description: '🔊 Toggle voice replies' },
     { command: 'ping', description: '🏓 Check if bot is responsive' },
     { command: 'commands', description: '📜 List all commands' },
@@ -164,6 +167,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('status', handleStatus);
   bot.command('mode', handleMode);
   bot.command('terminalui', handleTerminalUI);
+  bot.command('botname', handleBotName);
   bot.command('tts', handleTTS);
   bot.command('botstatus', handleBotStatus);
   bot.command('restartbot', handleRestartBot);
@@ -227,6 +231,8 @@ export async function createBot(): Promise<Bot> {
       await handleModeCallback(ctx);
     } else if (data.startsWith('terminalui:')) {
       await handleTerminalUICallback(ctx);
+    } else if (data.startsWith('botname:')) {
+      await handleBotNameCallback(ctx);
     } else if (data.startsWith('tts:')) {
       await handleTTSCallback(ctx);
     } else if (data.startsWith('telegraph:')) {

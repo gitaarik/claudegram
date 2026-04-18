@@ -39,6 +39,10 @@ const envSchema = z.object({
     .default('true')
     .transform((val) => val.toLowerCase() === 'true'),
   BOT_NAME: z.string().default('Claudegram'),
+  DYNAMIC_BOT_NAME: z
+    .string()
+    .default('false')
+    .transform((val) => val.toLowerCase() === 'true'),
   BOT_MODE: z.enum(['dev', 'prod']).default('dev'),
   STREAMING_MODE: z.enum(['streaming', 'wait']).default('streaming'),
   STREAMING_DEBOUNCE_MS: z

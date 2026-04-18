@@ -33,6 +33,7 @@ import { isMediumUrl, fetchMediumArticle, FreediumArticle } from '../../medium/f
 import { escapeMarkdownV2 as esc } from '../../telegram/markdown.js';
 import { getTTSSettings, setTTSEnabled, setTTSVoice, setTTSAutoplay } from '../../tts/tts-settings.js';
 import { getTerminalUISettings, setTerminalUIEnabled } from '../../telegram/terminal-settings.js';
+import { getBotNameSettings, setBotNameEnabled, isBotNameEnabled } from '../../telegram/botname-settings.js';
 import { getTelegraphSettings, setTelegraphEnabled } from '../../telegram/telegraph-settings.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import { transcribeFile, downloadTelegramAudio } from '../../audio/transcribe.js';
@@ -65,6 +66,84 @@ async function replyMd(ctx: Context, text: string): Promise<void> {
 
 function buildFeatureDisabledMessage(feature: string): string {
   return `⚠️ ${feature} feature is disabled in configuration.`;
+}
+
+/** Update the Telegram bot display name to reflect the active project. */
+async function updateBotName(ctx: Context, sessionKey: string, projectPath: string): Promise<void> {
+  if (!isBotNameEnabled(sessionKey)) return;
+  const projectName = path.basename(projectPath);
+  const name = `${config.BOT_NAME} | ${projectName}`.slice(0, 64);
+  try {
+    await ctx.api.setMyName(name);
+  } catch (err) {
+    console.error('[Bot] Failed to update bot name:', err);
+  }
+}
+
+export async function handleBotName(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
+
+  const settings = getBotNameSettings(sessionKey);
+  const currentStatus = settings.enabled ? 'ON' : 'OFF';
+
+  const keyboard = [
+    [
+      {
+        text: settings.enabled ? '✓ On' : 'On',
+        callback_data: 'botname:on'
+      },
+      {
+        text: !settings.enabled ? '✓ Off' : 'Off',
+        callback_data: 'botname:off'
+      },
+    ],
+  ];
+
+  const description = settings.enabled
+    ? '_Bot name updates to include the active project when switching_'
+    : '_Bot name stays as configured in BOT\\_NAME_';
+
+  await ctx.reply(
+    `✏️ *Dynamic Bot Name*\n\nCurrent: *${currentStatus}*\n${description}`,
+    {
+      parse_mode: 'MarkdownV2',
+      reply_markup: { inline_keyboard: keyboard },
+    }
+  );
+}
+
+export async function handleBotNameCallback(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
+
+  const data = ctx.callbackQuery?.data;
+  if (!data || !data.startsWith('botname:')) return;
+
+  const newState = data.replace('botname:', '') === 'on';
+  setBotNameEnabled(sessionKey, newState);
+
+  const statusText = newState ? 'ON' : 'OFF';
+  const description = newState
+    ? '_Bot name updates to include the active project when switching_'
+    : '_Bot name stays as configured in BOT\\_NAME_';
+
+  await ctx.answerCallbackQuery({ text: `Dynamic bot name ${statusText}!` });
+  await ctx.editMessageText(
+    `✅ Dynamic Bot Name *${statusText}*\n\n${description}`,
+    { parse_mode: 'MarkdownV2' }
+  );
+
+  // Reset bot name to base when disabling
+  if (!newState) {
+    try {
+      await ctx.api.setMyName(config.BOT_NAME);
+    } catch (err) {
+      console.error('[Bot] Failed to reset bot name:', err);
+    }
+  }
 }
 
 async function replyFeatureDisabled(ctx: Context, feature: string): Promise<void> {
@@ -418,6 +497,7 @@ export async function handleProjectCallback(ctx: Context): Promise<void> {
   if (action === 'use') {
     sessionManager.setWorkingDirectory(sessionKey, state.current);
     clearConversation(sessionKey);
+    await updateBotName(ctx, sessionKey, state.current);
 
     await ctx.answerCallbackQuery({ text: 'Project set' });
     await ctx.editMessageText(
@@ -691,6 +771,7 @@ export async function handleProject(ctx: Context): Promise<void> {
 
   sessionManager.setWorkingDirectory(sessionKey, projectPath);
   clearConversation(sessionKey);
+  await updateBotName(ctx, sessionKey, projectPath);
 
   await replyMd(ctx, `✅ Project: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`);
 
@@ -728,6 +809,7 @@ export async function handleNewProject(ctx: Context): Promise<void> {
   fs.mkdirSync(projectPath, { recursive: true, mode: 0o700 });
   sessionManager.setWorkingDirectory(sessionKey, projectPath);
   clearConversation(sessionKey);
+  await updateBotName(ctx, sessionKey, projectPath);
 
   await replyMd(ctx, `✅ Created and opened: *${esc(args)}*\n\nYou can now chat with Claude about this project\\!${projectStatusSuffix(sessionKey)}`);
 
