@@ -116,6 +116,7 @@ export function getAvailableCommands(): string {
       '• `/cancel` \\- Cancel current request',
       '• `/mode` \\- Toggle streaming mode',
       '• `/terminalui` \\- Toggle terminal\\-style display',
+      '• `/botname` \\- Toggle dynamic bot name',
     ],
   });
 
