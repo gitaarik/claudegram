@@ -513,6 +513,13 @@ export async function sendToAgent(
             response.close();
             controller.abort();
           },
+          staleToolTimeoutMs: config.AGENT_STALE_TOOL_TIMEOUT_MS > 0 ? config.AGENT_STALE_TOOL_TIMEOUT_MS : undefined,
+          onStaleToolTimeout: () => {
+            logAt('basic', `[Claude] WATCHDOG: Stale tool timeout — only heartbeats for ${formatDuration(config.AGENT_STALE_TOOL_TIMEOUT_MS)}, force-closing query for session:${sessionKey}`);
+            silenceTimedOut = true;
+            response.close();
+            controller.abort();
+          },
         })
       : null;
     watchdog?.start();
