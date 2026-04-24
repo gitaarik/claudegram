@@ -6,8 +6,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:multi": "tsx src/launcher.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:multi": "node dist/launcher.js",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

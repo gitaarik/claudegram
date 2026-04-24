@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+.env.bot*
+instances.json
 *.log
 .DS_Store
 .telegraph-account.json

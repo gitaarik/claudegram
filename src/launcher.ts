@@ -1,0 +1,322 @@
+/**
+ * Multi-instance launcher — runs multiple bot instances in a single process
+ * using worker threads. Each worker gets its own module scope + environment,
+ * so the existing global config singleton works without any changes.
+ *
+ * Usage:
+ *   npm run start:multi                     # uses instances.json
+ *   npm run start:multi -- --config my.json # custom config path
+ *   npx tsx src/launcher.ts                 # dev mode
+ */
+
+import { Worker, isMainThread } from 'worker_threads';
+import { readFileSync, existsSync } from 'fs';
+import { config as loadEnv } from 'dotenv';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '..');
+
+// Heartbeat: workers ping the launcher periodically. If a worker goes silent
+// for too long, the launcher force-terminates and respawns it.
+const HEARTBEAT_CHECK_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 90_000;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ResolvedInstance {
+  name: string;
+  token: string;
+  overrides?: Record<string, string>;
+}
+
+interface InstanceEntry {
+  name: string;
+  token?: string;    // single bot
+  tokens?: string[]; // list = auto-template with sequential numbering
+  overrides?: Record<string, string>;
+}
+
+interface InstancesConfig {
+  defaults?: Record<string, string>;
+  instances: InstanceEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Strip JSON5-style // comments (but not inside strings). */
+function stripJsonComments(text: string): string {
+  return text.replace(/^\s*\/\/.*$/gm, '');
+}
+
+function padNumber(n: number, total: number): string {
+  const digits = String(total).length;
+  return String(n).padStart(digits, '0');
+}
+
+function expandName(template: string, index: number, total: number): string {
+  return template
+    .replace(/\{n\}/g, String(index))
+    .replace(/\{N\}/g, padNumber(index, total));
+}
+
+// ---------------------------------------------------------------------------
+// Load & expand instances config
+// ---------------------------------------------------------------------------
+
+function loadInstancesConfig(configPath: string): ResolvedInstance[] {
+  if (!existsSync(configPath)) {
+    console.error(`\u274c Instances config not found: ${configPath}`);
+    console.error('  Copy instances.json.example to instances.json and configure your bots.');
+    process.exit(1);
+  }
+
+  const raw = readFileSync(configPath, 'utf-8');
+  const parsed: InstancesConfig = JSON.parse(stripJsonComments(raw));
+  const defaults = parsed.defaults ?? {};
+  const resolved: ResolvedInstance[] = [];
+
+  for (const entry of parsed.instances ?? []) {
+    const mergedOverrides = { ...defaults, ...entry.overrides };
+
+    if (entry.tokens?.length) {
+      // List of tokens → auto-template: expand name with {n}/{N}
+      const total = entry.tokens.length;
+      entry.tokens.forEach((token, i) => {
+        resolved.push({
+          name: expandName(entry.name, i + 1, total),
+          token,
+          overrides: mergedOverrides,
+        });
+      });
+    } else if (entry.token) {
+      // Single token → individual instance
+      resolved.push({
+        name: entry.name,
+        token: entry.token,
+        overrides: mergedOverrides,
+      });
+    } else {
+      console.warn(`\u26a0\ufe0f Skipping instance "${entry.name}": no token or tokens provided`);
+    }
+  }
+
+  if (resolved.length === 0) {
+    console.error('\u274c No instances defined in config. Add instances with token or tokens.');
+    process.exit(1);
+  }
+
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+if (!isMainThread) {
+  console.error('launcher.ts must run on the main thread');
+  process.exit(1);
+}
+
+// Parse --config flag
+const args = process.argv.slice(2);
+const configFlagIdx = args.indexOf('--config');
+const configPath = configFlagIdx !== -1 && args[configFlagIdx + 1]
+  ? path.resolve(args[configFlagIdx + 1])
+  : path.join(projectRoot, 'instances.json');
+
+// Load base .env so all env vars are available as defaults
+const envPath = process.env.CLAUDEGRAM_ENV_PATH || path.join(projectRoot, '.env');
+loadEnv({ path: envPath });
+
+const instances = loadInstancesConfig(configPath);
+
+console.log(`\ud83d\ude80 Launching ${instances.length} bot instance(s)...`);
+
+// Resolve the worker entry point (compiled JS or tsx for dev)
+const workerEntry = existsSync(path.join(projectRoot, 'dist', 'index.js'))
+  ? path.join(projectRoot, 'dist', 'index.js')
+  : path.join(projectRoot, 'src', 'index.ts');
+
+const isTsx = workerEntry.endsWith('.ts');
+
+const workers: Map<string, Worker> = new Map();
+const pendingRestarts = new Set<string>();
+const lastHeartbeat = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// Worker lifecycle
+// ---------------------------------------------------------------------------
+
+interface WorkerMessage {
+  type: string;
+  name?: string;
+}
+
+function buildWorkerEnv(inst: ResolvedInstance): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // Copy base process.env (includes .env values)
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) env[k] = v;
+  }
+
+  // Apply instance overrides
+  if (inst.overrides) {
+    Object.assign(env, inst.overrides);
+  }
+
+  // Always set token and bot name
+  env.TELEGRAM_BOT_TOKEN = inst.token;
+  env.BOT_NAME = inst.name;
+
+  // Tag for log prefixing inside the worker
+  env.CLAUDEGRAM_INSTANCE_NAME = inst.name;
+
+  return env;
+}
+
+function spawnWorker(inst: ResolvedInstance): Worker {
+  const env = buildWorkerEnv(inst);
+
+  const workerOptions: ConstructorParameters<typeof Worker>[1] = {
+    env,
+    ...(isTsx ? {
+      // When running .ts files directly, use tsx as the loader
+      execArgv: ['--import', 'tsx'],
+    } : {}),
+  };
+
+  const worker = new Worker(workerEntry, workerOptions);
+  lastHeartbeat.set(inst.name, Date.now());
+
+  worker.on('message', (msg: WorkerMessage) => {
+    if (msg?.type === 'heartbeat') {
+      lastHeartbeat.set(inst.name, Date.now());
+    } else if (msg?.type === 'restart') {
+      // Self-restart: this worker wants to be restarted
+      console.log(`[Launcher] ${inst.name} requested self-restart`);
+      pendingRestarts.add(inst.name);
+      worker.terminate();
+    } else if (msg?.type === 'restart_sibling') {
+      // Cross-bot restart: restart a different worker by name
+      const targetName = msg.name;
+      if (!targetName) {
+        worker.postMessage({ type: 'restart_sibling_result', success: false, name: targetName, reason: 'no name provided' });
+        return;
+      }
+      const sibling = workers.get(targetName);
+      if (!sibling) {
+        // Try case-insensitive match
+        const match = [...workers.keys()].find(k => k.toLowerCase() === targetName.toLowerCase());
+        if (match) {
+          const siblingWorker = workers.get(match)!;
+          console.log(`[Launcher] ${inst.name} requested restart of sibling ${match}`);
+          pendingRestarts.add(match);
+          siblingWorker.terminate();
+          worker.postMessage({ type: 'restart_sibling_result', success: true, name: match });
+        } else {
+          const available = [...workers.keys()].filter(k => k !== inst.name);
+          worker.postMessage({
+            type: 'restart_sibling_result', success: false, name: targetName,
+            reason: available.length ? `not found (available: ${available.join(', ')})` : 'no other instances running',
+          });
+        }
+      } else if (targetName === inst.name) {
+        worker.postMessage({ type: 'restart_sibling_result', success: false, name: targetName, reason: 'use /restartbot without arguments to restart yourself' });
+      } else {
+        console.log(`[Launcher] ${inst.name} requested restart of sibling ${targetName}`);
+        pendingRestarts.add(targetName);
+        sibling.terminate();
+        worker.postMessage({ type: 'restart_sibling_result', success: true, name: targetName });
+      }
+    }
+  });
+
+  worker.on('error', (err) => {
+    console.error(`[${inst.name}] Worker error:`, err);
+  });
+
+  worker.on('exit', (code) => {
+    console.log(`[${inst.name}] Worker exited with code ${code}`);
+    lastHeartbeat.delete(inst.name);
+
+    if (pendingRestarts.has(inst.name)) {
+      // Planned restart — respawn after a short delay
+      pendingRestarts.delete(inst.name);
+      console.log(`[Launcher] Respawning ${inst.name} in 1s...`);
+      setTimeout(() => {
+        const newWorker = spawnWorker(inst);
+        workers.set(inst.name, newWorker);
+        console.log(`[Launcher] ✓ ${inst.name} respawned`);
+      }, 1000);
+    } else {
+      workers.delete(inst.name);
+      if (workers.size === 0) {
+        console.log('All workers exited. Shutting down launcher.');
+        process.exit(code ?? 0);
+      }
+    }
+  });
+
+  workers.set(inst.name, worker);
+  return worker;
+}
+
+// ---------------------------------------------------------------------------
+// Spawn all instances
+// ---------------------------------------------------------------------------
+
+for (const inst of instances) {
+  spawnWorker(inst);
+  console.log(`  \u2713 ${inst.name}`);
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat monitor — detect stuck workers and auto-respawn them
+// ---------------------------------------------------------------------------
+
+setInterval(() => {
+  const now = Date.now();
+  for (const inst of instances) {
+    const worker = workers.get(inst.name);
+    if (!worker) continue;
+
+    const last = lastHeartbeat.get(inst.name) ?? 0;
+    const silentMs = now - last;
+    if (silentMs > HEARTBEAT_TIMEOUT_MS) {
+      console.error(`[Launcher] ${inst.name} missed heartbeat (${Math.round(silentMs / 1000)}s silent) — force-restarting`);
+      pendingRestarts.add(inst.name);
+      worker.terminate();
+    }
+  }
+}, HEARTBEAT_CHECK_MS).unref();
+
+// ---------------------------------------------------------------------------
+// Forward signals to all workers for graceful shutdown
+// ---------------------------------------------------------------------------
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    console.log(`\n\ud83d\udc4b Received ${signal}, stopping all instances...`);
+    // Clear pending restarts so workers don't respawn during shutdown
+    pendingRestarts.clear();
+    for (const [name, worker] of workers) {
+      console.log(`  Stopping ${name}...`);
+      worker.postMessage({ type: 'shutdown' });
+    }
+    // Give workers 5 seconds to shut down gracefully
+    setTimeout(() => {
+      console.log('Force-terminating remaining workers...');
+      for (const worker of workers.values()) {
+        worker.terminate();
+      }
+      process.exit(0);
+    }, 5000).unref();
+  });
+}

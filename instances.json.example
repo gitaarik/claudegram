@@ -1,0 +1,35 @@
+{
+  // Shared defaults applied to ALL instances (layered on top of .env).
+  // Any .env variable can go here.
+  "defaults": {
+    "ALLOWED_USER_IDS": "123456789",
+    "DANGEROUS_MODE": "false",
+    "STREAMING_MODE": "streaming"
+  },
+
+  "instances": [
+    // List of tokens → auto-template: spawns 3 bots named "Claudegram 1", "Claudegram 2", "Claudegram 3"
+    // Use {n} for sequential numbering, {N} for zero-padded (01, 02, ...).
+    {
+      "name": "Claudegram {n}",
+      "tokens": [
+        "110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+        "220201543:BBIdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+        "330201543:CCJdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
+      ],
+      "overrides": {
+        "WORKSPACE_DIR": "/home/user/projects"
+      }
+    },
+
+    // Single token → individual instance with custom settings
+    {
+      "name": "Admin Bot",
+      "token": "440201543:DDKdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+      "overrides": {
+        "ALLOWED_USER_IDS": "987654321",
+        "DANGEROUS_MODE": "true"
+      }
+    }
+  ]
+}

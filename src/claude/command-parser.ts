@@ -117,6 +117,7 @@ export function getAvailableCommands(): string {
       '• `/mode` \\- Toggle streaming mode',
       '• `/terminalui` \\- Toggle terminal\\-style display',
       '• `/botname` \\- Toggle dynamic bot name',
+      '• `/topic <text>` \\- Set current work topic in bot name',
     ],
   });
 
