@@ -10,8 +10,10 @@ export interface WatchdogOptions {
   warnAfterSeconds: number;
   logIntervalSeconds: number;
   timeoutMs?: number; // 0 or undefined = no hard timeout
+  silenceTimeoutMs?: number; // 0 or undefined = no silence timeout
   onWarning?: (sinceLastMessageMs: number, totalElapsedMs: number) => void;
   onTimeout?: () => void;
+  onSilenceTimeout?: () => void;
 }
 
 export class AgentWatchdog {
@@ -19,8 +21,10 @@ export class AgentWatchdog {
   private warnAfterMs: number;
   private logIntervalMs: number;
   private timeoutMs: number;
+  private silenceTimeoutMs: number;
   private onWarning?: (sinceLastMessageMs: number, totalElapsedMs: number) => void;
   private onTimeout?: () => void;
+  private onSilenceTimeout?: () => void;
 
   private startTime: number = 0;
   private lastActivityTime: number = 0;
@@ -33,8 +37,10 @@ export class AgentWatchdog {
     this.warnAfterMs = options.warnAfterSeconds * 1000;
     this.logIntervalMs = options.logIntervalSeconds * 1000;
     this.timeoutMs = options.timeoutMs || 0;
+    this.silenceTimeoutMs = options.silenceTimeoutMs || 0;
     this.onWarning = options.onWarning;
     this.onTimeout = options.onTimeout;
+    this.onSilenceTimeout = options.onSilenceTimeout;
   }
 
   /**
@@ -74,6 +80,16 @@ export class AgentWatchdog {
         `[Claude] WATCHDOG TIMEOUT: No response after ${formatDuration(totalElapsed)}, chat:${this.chatId}`
       );
       this.onTimeout?.();
+      this.stop();
+      return;
+    }
+
+    // Check silence timeout (no messages for extended period — stream likely hung)
+    if (this.silenceTimeoutMs > 0 && sinceLastActivity >= this.silenceTimeoutMs) {
+      console.log(
+        `[Claude] WATCHDOG SILENCE TIMEOUT: No messages for ${formatDuration(sinceLastActivity)} (limit: ${formatDuration(this.silenceTimeoutMs)}), chat:${this.chatId}`
+      );
+      this.onSilenceTimeout?.();
       this.stop();
       return;
     }
