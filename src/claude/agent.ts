@@ -341,6 +341,7 @@ export async function sendToAgent(
   // Initialize timer for tracking query duration (watchdog created inside try with controller)
   const timer = createAgentTimer();
   let watchdog: AgentWatchdog | null = null;
+  let silenceTimedOut = false;
 
   try {
     const controller = abortController || new AbortController();
@@ -505,6 +506,13 @@ export async function sendToAgent(
             logAt('basic', `[Claude] WATCHDOG: Query timeout reached, aborting session:${sessionKey}`);
             controller.abort();
           },
+          silenceTimeoutMs: config.AGENT_SILENCE_TIMEOUT_MS > 0 ? config.AGENT_SILENCE_TIMEOUT_MS : undefined,
+          onSilenceTimeout: () => {
+            logAt('basic', `[Claude] WATCHDOG: Silence timeout — no messages for ${formatDuration(config.AGENT_SILENCE_TIMEOUT_MS)}, force-closing query for session:${sessionKey}`);
+            silenceTimedOut = true;
+            response.close();
+            controller.abort();
+          },
         })
       : null;
     watchdog?.start();
@@ -520,7 +528,9 @@ export async function sendToAgent(
         watchdog?.stop();
         fullText = isCancelled(sessionKey)
           ? '🛑 Request cancelled.'
-          : '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.';
+          : silenceTimedOut
+            ? `⏱️ The query stalled (no activity for ${formatDuration(config.AGENT_SILENCE_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`
+            : '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.';
         break;
       }
 
@@ -568,6 +578,9 @@ export async function sendToAgent(
             model: sysMsg.model,
             sessionId: sysMsg.session_id,
           };
+          // Store session ID early so it's available for recovery if the query hangs
+          chatSessionIds.set(sessionKey, sysMsg.session_id);
+          sessionManager.setClaudeSessionId(sessionKey, sysMsg.session_id);
           logAt('basic', `[Claude] SESSION INIT: model=${sysMsg.model}, session=${sysMsg.session_id}`);
         } else if (responseMessage.subtype === 'status') {
           const statusMsg = responseMessage as SDKStatusMessage;
@@ -632,9 +645,10 @@ export async function sendToAgent(
           // Interrupted via /cancel - show clean cancellation message
           fullText = '✅ Successfully cancelled - no tools or agents in process.';
           onProgress?.(fullText);
-        } else {
+        } else if (!silenceTimedOut) {
           // error_max_turns or unexpected error_during_execution
           // Clear stale session ID so next attempt starts fresh
+          // (but not on silence timeout — we want to preserve the session for recovery)
           chatSessionIds.delete(sessionKey);
           const session = sessionManager.getSession(sessionKey);
           if (session) {
@@ -653,6 +667,13 @@ export async function sendToAgent(
     if (isCancelled(sessionKey)) {
       return {
         text: '✅ Successfully cancelled - no tools or agents in process.',
+        toolsUsed,
+      };
+    }
+    // Silence timeout — preserve session for recovery
+    if (silenceTimedOut) {
+      return {
+        text: `⏱️ The query stalled (no activity for ${formatDuration(config.AGENT_SILENCE_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`,
         toolsUsed,
       };
     }
