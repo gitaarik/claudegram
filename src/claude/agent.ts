@@ -509,6 +509,9 @@ export async function sendToAgent(
       : null;
     watchdog?.start();
 
+    // Track whether we've captured a plan from spontaneous plan mode
+    let planCaptured = false;
+
     // Process response messages
     for await (const responseMessage of response) {
       // Record activity for watchdog
@@ -549,6 +552,17 @@ export async function sendToAgent(
               const taskDesc = toolInput.description || toolInput.prompt || 'unnamed task';
               const subagentType = toolInput.subagent_type || 'unknown';
               logAt('basic', `[Claude] SUBAGENT START: ${subagentType} — ${String(taskDesc).substring(0, 100)}`);
+            }
+            // Capture plan content from spontaneous plan mode (Write to ~/.claude/plans/)
+            if (!planCaptured && block.name === 'Write'
+                && typeof toolInput.file_path === 'string'
+                && toolInput.file_path.includes('/.claude/plans/')
+                && typeof toolInput.content === 'string') {
+              planCaptured = true;
+              const planSection = '📋 **Plan**\n\n' + toolInput.content + '\n\n---\n\n';
+              fullText = planSection + fullText;
+              onProgress?.(fullText);
+              logAt('basic', `[Claude] Captured plan from ${toolInput.file_path}`);
             }
             // Notify tool start for terminal UI
             onToolStart?.(block.name, toolInput);
