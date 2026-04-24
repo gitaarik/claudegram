@@ -184,6 +184,12 @@ const envSchema = z.object({
     .string()
     .default('false')
     .transform((val) => val.toLowerCase() === 'true'),
+  // Message batching: combine rapid-fire messages (e.g. Telegram splitting long
+  // pastes) into a single prompt. 0 = disabled.
+  MESSAGE_BATCH_TIMEOUT_MS: z
+    .string()
+    .default('2000')
+    .transform((val) => parseInt(val, 10)),
   // Cancel behaviour: auto-cancel running query when user sends a new message
   CANCEL_ON_NEW_MESSAGE: z
     .string()
