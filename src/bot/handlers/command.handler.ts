@@ -55,6 +55,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
+import { isMainThread } from 'worker_threads';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
 import { getSessionKeyFromCtx, parseSessionKey } from '../../utils/session-key.js';
@@ -68,16 +69,63 @@ function buildFeatureDisabledMessage(feature: string): string {
   return `⚠️ ${feature} feature is disabled in configuration.`;
 }
 
-/** Update the Telegram bot display name to reflect the active project. */
+// Per-session topic (ephemeral — not persisted across restarts)
+const sessionTopics: Map<string, string> = new Map();
+
+/** Build the full bot display name from base name, project, and topic. */
+function buildBotDisplayName(sessionKey: string): string {
+  const session = sessionManager.getSession(sessionKey);
+  const parts = [config.BOT_NAME];
+  if (session?.workingDirectory) {
+    parts.push(path.basename(session.workingDirectory));
+  }
+  const topic = sessionTopics.get(sessionKey);
+  if (topic) {
+    parts.push(topic);
+  }
+  return parts.join(' | ').slice(0, 64);
+}
+
+/** Update the Telegram bot display name to reflect the active project and topic. */
 async function updateBotName(ctx: Context, sessionKey: string, projectPath: string): Promise<void> {
   if (!isBotNameEnabled(sessionKey)) return;
-  const projectName = path.basename(projectPath);
-  const name = `${config.BOT_NAME} | ${projectName}`.slice(0, 64);
   try {
-    await ctx.api.setMyName(name);
+    await ctx.api.setMyName(buildBotDisplayName(sessionKey));
   } catch (err) {
     console.error('[Bot] Failed to update bot name:', err);
   }
+}
+
+export async function handleTopic(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
+
+  const text = ctx.message?.text || '';
+  const topic = text.split(' ').slice(1).join(' ').trim();
+
+  if (!topic) {
+    sessionTopics.delete(sessionKey);
+    if (isBotNameEnabled(sessionKey)) {
+      try {
+        await ctx.api.setMyName(buildBotDisplayName(sessionKey));
+      } catch (err) {
+        console.error('[Bot] Failed to update bot name:', err);
+      }
+    }
+    await replyMd(ctx, '✅ Topic cleared');
+    return;
+  }
+
+  sessionTopics.set(sessionKey, topic);
+  if (isBotNameEnabled(sessionKey)) {
+    try {
+      await ctx.api.setMyName(buildBotDisplayName(sessionKey));
+    } catch (err) {
+      console.error('[Bot] Failed to update bot name:', err);
+    }
+  }
+  await replyMd(ctx, `✅ Topic: *${esc(topic)}*`);
 }
 
 export async function handleBotName(ctx: Context): Promise<void> {
@@ -1261,6 +1309,52 @@ export async function handleBotStatus(ctx: Context): Promise<void> {
 }
 
 export async function handleRestartBot(ctx: Context): Promise<void> {
+  // Multi-instance mode (worker thread) — restart via launcher, not shell script
+  if (!isMainThread) {
+    const args = ctx.message?.text?.split(/\s+/).slice(1).join(' ').trim();
+
+    // Cross-bot restart: /restartbot <name>
+    if (args) {
+      const { requestSiblingRestart } = await import('../../index.js');
+      const result = await requestSiblingRestart(args);
+      if (result.success) {
+        await replyMd(ctx, `🔁 Restarting *${esc(result.name ?? args)}*\\.\\.\\. it should be back in ~10 seconds\\.`);
+      } else {
+        await replyMd(ctx, `❌ Could not restart *${esc(args)}*: ${esc(result.reason ?? 'unknown error')}`);
+      }
+      return;
+    }
+
+    // Self-restart
+    await replyMd(
+      ctx,
+      '🔁 Restarting this bot instance\\.\n\n⏳ Other bots will not be affected\\. Please wait ~10 seconds\\.'
+    );
+
+    const restartChatId = ctx.chat?.id;
+    if (restartChatId) {
+      try {
+        await ctx.api.sendMessage(restartChatId, '👇 Restore your session after restart:', {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '▶️ Continue', callback_data: 'restart:continue' },
+                { text: '📜 Resume', callback_data: 'restart:resume' },
+              ],
+            ],
+          },
+        });
+      } catch (e) {
+        console.debug('[RestartBot] Failed to send restore buttons:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    const { requestRestart } = await import('../../index.js');
+    requestRestart();
+    return;
+  }
+
+  // Single-instance mode — use shell script to restart the whole process
   if (!botctlExists()) {
     await replyMd(ctx, '❌ Bot control script not found\\.\n\nExpected at `scripts/claudegram-botctl.sh`\\.');
     return;
