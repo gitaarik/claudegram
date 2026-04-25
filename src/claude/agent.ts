@@ -342,6 +342,7 @@ export async function sendToAgent(
   const timer = createAgentTimer();
   let watchdog: AgentWatchdog | null = null;
   let silenceTimedOut = false;
+  let staleToolTimedOut = false;
 
   try {
     const controller = abortController || new AbortController();
@@ -516,7 +517,8 @@ export async function sendToAgent(
           staleToolTimeoutMs: config.AGENT_STALE_TOOL_TIMEOUT_MS > 0 ? config.AGENT_STALE_TOOL_TIMEOUT_MS : undefined,
           onStaleToolTimeout: () => {
             logAt('basic', `[Claude] WATCHDOG: Stale tool timeout — only heartbeats for ${formatDuration(config.AGENT_STALE_TOOL_TIMEOUT_MS)}, force-closing query for session:${sessionKey}`);
-            silenceTimedOut = true;
+            staleToolTimedOut = true;
+            silenceTimedOut = true; // preserve session for recovery
             response.close();
             controller.abort();
           },
@@ -535,9 +537,11 @@ export async function sendToAgent(
         watchdog?.stop();
         fullText = isCancelled(sessionKey)
           ? '🛑 Request cancelled.'
-          : silenceTimedOut
-            ? `⏱️ The query stalled (no activity for ${formatDuration(config.AGENT_SILENCE_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`
-            : '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.';
+          : staleToolTimedOut
+            ? `⏱️ A tool appears stuck (no progress for ${formatDuration(config.AGENT_STALE_TOOL_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`
+            : silenceTimedOut
+              ? `⏱️ The query stalled (no activity for ${formatDuration(config.AGENT_SILENCE_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`
+              : '⏱️ Request timed out — the query took too long and was automatically stopped. Try a simpler prompt or break it into smaller steps.';
         break;
       }
 
@@ -674,6 +678,13 @@ export async function sendToAgent(
     if (isCancelled(sessionKey)) {
       return {
         text: '✅ Successfully cancelled - no tools or agents in process.',
+        toolsUsed,
+      };
+    }
+    // Stale tool timeout — preserve session for recovery
+    if (staleToolTimedOut) {
+      return {
+        text: `⏱️ A tool appears stuck (no progress for ${formatDuration(config.AGENT_STALE_TOOL_TIMEOUT_MS)}). Your session has been preserved — send another message to continue.`,
         toolsUsed,
       };
     }
