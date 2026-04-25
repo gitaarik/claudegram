@@ -146,11 +146,12 @@ export async function createBot(): Promise<Bot> {
   // Apply auth middleware to all updates
   bot.use(authMiddleware);
 
-  // /cancel, /reset, and /ping fire BEFORE sequentialize so they bypass per-chat ordering.
-  // This lets them interrupt a running query without waiting for it to finish.
+  // /cancel, /reset, /ping, and /status fire BEFORE sequentialize so they bypass per-chat ordering.
+  // This lets them interrupt or inspect a running query without waiting for it to finish.
   bot.command('cancel', handleCancel);
   bot.command('softreset', handleReset);
   bot.command('ping', handlePing);
+  bot.command('status', handleStatus);
 
   // Sequentialize: same-chat updates are processed in order.
   // This runs AFTER /cancel so cancel bypasses it.
@@ -161,7 +162,6 @@ export async function createBot(): Promise<Bot> {
   bot.command('clear', handleClear);
   bot.command('project', handleProject);
   bot.command('newproject', handleNewProject);
-  bot.command('status', handleStatus);
   bot.command('mode', handleMode);
   bot.command('terminalui', handleTerminalUI);
   bot.command('tts', handleTTS);
