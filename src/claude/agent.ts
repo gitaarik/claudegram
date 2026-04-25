@@ -535,6 +535,14 @@ export async function sendToAgent(
       recordMessage(timer);
       watchdog?.recordActivity(responseMessage.type);
 
+      // If /cancel was issued but interrupt() failed to stop the stream,
+      // force-abort on the next heartbeat so we don't hang forever.
+      if (!controller.signal.aborted && isCancelled(sessionKey)) {
+        logAt('basic', `[Claude] Cancel flag detected on heartbeat, force-closing query for session:${sessionKey}`);
+        response.close();
+        controller.abort();
+      }
+
       // Check for abort
       if (controller.signal.aborted) {
         watchdog?.stop();
