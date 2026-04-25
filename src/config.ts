@@ -215,8 +215,8 @@ const envSchema = z.object({
     .transform((val) => parseInt(val, 10)), // 0 = disabled, default 3 minutes
   AGENT_STALE_TOOL_TIMEOUT_MS: z
     .string()
-    .default('600000')
-    .transform((val) => parseInt(val, 10)), // 0 = disabled, default 10 minutes
+    .default('180000')
+    .transform((val) => parseInt(val, 10)), // 0 = disabled, default 3 minutes
   // HTTP proxy for Telegram API requests (e.g. socks5://127.0.0.1:1080 or http://proxy:8080)
   TELEGRAM_PROXY_URL: z.string().optional(),
   // Completion notification (send a new message after long streaming tasks)
