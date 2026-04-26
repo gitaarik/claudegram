@@ -1,5 +1,6 @@
 import { Context, InputFile } from 'grammy';
 import { sessionManager } from '../../claude/session-manager.js';
+import { sessionHistory } from '../../claude/session-history.js';
 import {
   clearConversation,
   sendToAgent,
@@ -103,7 +104,7 @@ async function updateBotName(ctx: Context, sessionKey: string, projectPath: stri
 }
 
 /**
- * Set the session topic programmatically (used by MCP tool).
+ * Set the session topic programmatically (used by MCP tool and auto-resume).
  * Returns the new display name string.
  */
 export function setSessionTopic(sessionKey: string, topic: string): string {
@@ -112,6 +113,8 @@ export function setSessionTopic(sessionKey: string, topic: string): string {
   } else {
     sessionTopics.delete(sessionKey);
   }
+  // Persist so topic survives restarts
+  sessionHistory.updateTopic(sessionKey, topic || undefined);
   return buildBotDisplayName(sessionKey);
 }
 
@@ -128,28 +131,15 @@ export async function handleTopic(ctx: Context): Promise<void> {
   const text = ctx.message?.text || '';
   const topic = text.split(' ').slice(1).join(' ').trim();
 
-  if (!topic) {
-    sessionTopics.delete(sessionKey);
-    if (isBotNameEnabled(sessionKey)) {
-      try {
-        await rateLimitedSetMyName((n) => ctx.api.setMyName(n), buildBotDisplayName(sessionKey));
-      } catch (err) {
-        console.error('[Bot] Failed to update bot name:', err);
-      }
-    }
-    await replyMd(ctx, '✅ Topic cleared');
-    return;
-  }
-
-  sessionTopics.set(sessionKey, topic);
+  const displayName = setSessionTopic(sessionKey, topic);
   if (isBotNameEnabled(sessionKey)) {
     try {
-      await rateLimitedSetMyName((n) => ctx.api.setMyName(n), buildBotDisplayName(sessionKey));
+      await rateLimitedSetMyName((n) => ctx.api.setMyName(n), displayName);
     } catch (err) {
       console.error('[Bot] Failed to update bot name:', err);
     }
   }
-  await replyMd(ctx, `✅ Topic: *${esc(topic)}*`);
+  await replyMd(ctx, topic ? `✅ Topic: *${esc(topic)}*` : '✅ Topic cleared');
 }
 
 export async function handleBotName(ctx: Context): Promise<void> {

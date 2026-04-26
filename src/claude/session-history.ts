@@ -12,6 +12,7 @@ const sessionHistoryEntrySchema = z.object({
   projectName: z.string(),
   lastMessagePreview: z.string(),
   lastAssistantPreview: z.string().optional(),
+  topic: z.string().optional(),
   createdAt: z.string(),
   lastActivity: z.string(),
 });
@@ -204,6 +205,15 @@ class SessionHistory {
       entry.lastActivity = new Date().toISOString();
       this.save();
     }
+  }
+
+  updateTopic(sessionKey: string, topic: string | undefined): void {
+    const history = this.data.sessions[sessionKey];
+    if (!history || history.length === 0) return;
+
+    // Update the most recent entry (index 0)
+    history[0].topic = topic || undefined;
+    this.save();
   }
 
   updateClaudeSessionId(sessionKey: string, conversationId: string, claudeSessionId: string): void {

@@ -10,6 +10,8 @@ import { sessionManager } from './claude/session-manager.js';
 import { sessionHistory } from './claude/session-history.js';
 import { clearConversation } from './providers/provider-router.js';
 import { parseSessionKey } from './utils/session-key.js';
+import { setSessionTopic } from './bot/handlers/command.handler.js';
+import { isBotNameEnabled } from './telegram/botname-settings.js';
 import type { Bot } from 'grammy';
 
 // When running as a worker thread (multi-instance mode), prefix all console
@@ -128,8 +130,21 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
 
       clearConversation(sessionKey);
 
+      // Restore topic in memory and update bot name
+      if (entry.topic && isBotNameEnabled(sessionKey)) {
+        const displayName = setSessionTopic(sessionKey, entry.topic);
+        try {
+          await bot.api.setMyName(displayName);
+        } catch (e) {
+          console.debug('[AutoResume] Failed to update bot name:', e instanceof Error ? e.message : e);
+        }
+      }
+
       const projectName = path.basename(session.workingDirectory);
       let msg = `✅ Reloaded and session restored: ${projectName}`;
+      if (entry.topic) {
+        msg += ` (topic: ${entry.topic})`;
+      }
       if (entry.lastAssistantPreview) {
         msg += `\n\n💬 Last response:\n${entry.lastAssistantPreview}`;
       }
