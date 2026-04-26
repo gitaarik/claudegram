@@ -29,15 +29,42 @@ interface SessionHistoryData {
 }
 
 const HISTORY_DIR = path.join(os.homedir(), '.claudegram');
-const HISTORY_FILE = path.join(HISTORY_DIR, 'sessions.json');
+const DEFAULT_HISTORY_FILE = path.join(HISTORY_DIR, 'sessions.json');
 const MAX_HISTORY_PER_CHAT = 20;
 
 class SessionHistory {
   private data: SessionHistoryData = { sessions: {} };
+  private historyFile: string = DEFAULT_HISTORY_FILE;
 
   constructor() {
     this.ensureDirectory();
     this.load();
+  }
+
+  /**
+   * Scope session history to a specific bot instance. Call early in startup
+   * before any sessions are created. Migrates from the shared sessions.json
+   * if a per-bot file doesn't exist yet.
+   */
+  initForBot(botId: string): void {
+    const perBotFile = path.join(HISTORY_DIR, `sessions-${botId}.json`);
+    if (perBotFile === this.historyFile) return; // already initialized
+
+    this.historyFile = perBotFile;
+
+    if (fs.existsSync(perBotFile)) {
+      // Per-bot file exists, load it
+      this.load();
+    } else if (fs.existsSync(DEFAULT_HISTORY_FILE)) {
+      // First run with per-bot scoping: copy shared file as starting point
+      try {
+        fs.copyFileSync(DEFAULT_HISTORY_FILE, perBotFile);
+        console.log(`[SessionHistory] Migrated shared sessions.json → sessions-${botId}.json`);
+      } catch {
+        // If copy fails, start fresh
+      }
+      this.load();
+    }
   }
 
   private ensureDirectory(): void {
@@ -48,8 +75,8 @@ class SessionHistory {
 
   private load(): void {
     try {
-      if (fs.existsSync(HISTORY_FILE)) {
-        const content = fs.readFileSync(HISTORY_FILE, 'utf-8');
+      if (fs.existsSync(this.historyFile)) {
+        const content = fs.readFileSync(this.historyFile, 'utf-8');
         const parsed = JSON.parse(content);
 
         // Validate with Zod schema
@@ -73,7 +100,7 @@ class SessionHistory {
 
   private save(): void {
     try {
-      atomicWriteFileSync(HISTORY_FILE, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+      atomicWriteFileSync(this.historyFile, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     } catch (error) {
       console.error('[SessionHistory] Failed to save:', error);
     }

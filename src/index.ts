@@ -184,6 +184,10 @@ async function main() {
   console.log(`📋 Allowed users: ${config.ALLOWED_USER_IDS.join(', ')}`);
   console.log(`📝 Mode: ${config.STREAMING_MODE}`);
 
+  // Scope session history to this bot instance so multi-bot setups don't cross-restore
+  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
+  sessionHistory.initForBot(botId);
+
   // Prevent system sleep on macOS (only when running standalone, not as worker)
   if (isMainThread) preventSleep();
 
