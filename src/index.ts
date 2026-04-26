@@ -79,7 +79,7 @@ export function requestRestartAll(): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-resume after /reload
+// Auto-resume after /rebuild or /restartbot
 // ---------------------------------------------------------------------------
 
 const RELOAD_MARKER_FILE = path.join(os.homedir(), '.claudegram', 'pending-reload.json');
@@ -136,7 +136,11 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
       clearConversation(sessionKey);
 
       const projectName = path.basename(session.workingDirectory);
-      await bot.api.sendMessage(chatId, `✅ Reloaded and session restored: ${projectName}`, {
+      let msg = `✅ Reloaded and session restored: ${projectName}`;
+      if (entry.lastMessagePreview) {
+        msg += `\n\n💬 Last message:\n${entry.lastMessagePreview}`;
+      }
+      await bot.api.sendMessage(chatId, msg, {
         ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       });
       resumed++;
@@ -170,7 +174,7 @@ async function main() {
   // This lets /cancel bypass the per-chat queue and interrupt running queries.
   const runner = run(bot);
 
-  // Auto-resume sessions after a /reload
+  // Auto-resume sessions after /rebuild or /restartbot
   try {
     await autoResumeAfterReload(bot);
   } catch (err) {

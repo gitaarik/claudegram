@@ -244,6 +244,42 @@ const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const BOTCTL_PATH = path.join(PROJECT_ROOT, 'scripts', 'claudegram-botctl.sh');
 const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
 const RELOAD_MARKER_FILE = path.join(RELOAD_MARKER_DIR, 'pending-reload.json');
+/** Write the reload marker so autoResumeAfterReload picks up sessions on restart. */
+function writeReloadMarker(): void {
+  try {
+    if (!fs.existsSync(RELOAD_MARKER_DIR)) {
+      fs.mkdirSync(RELOAD_MARKER_DIR, { recursive: true, mode: 0o700 });
+    }
+    fs.writeFileSync(
+      RELOAD_MARKER_FILE,
+      JSON.stringify({ timestamp: new Date().toISOString() }),
+      { mode: 0o600 }
+    );
+  } catch (err) {
+    console.error('[ReloadMarker] Failed to write marker file:', err);
+  }
+}
+
+/** Send Continue/Resume inline buttons for manual session restore. */
+async function sendRestoreButtons(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  try {
+    await ctx.api.sendMessage(chatId, '👇 Restore your session after restart:', {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '▶️ Continue', callback_data: 'restart:continue' },
+            { text: '📜 Resume', callback_data: 'restart:resume' },
+          ],
+        ],
+      },
+    });
+  } catch (e) {
+    console.debug('[RestartBot] Failed to send restore buttons:', e instanceof Error ? e.message : e);
+  }
+}
+
 const PROJECT_BROWSER_PAGE_SIZE = 8;
 
 type ProjectBrowserState = {
@@ -1338,27 +1374,12 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
     }
 
     // Self-restart
-    await replyMd(
-      ctx,
-      '🔁 Restarting this bot instance\\.\n\n⏳ Other bots will not be affected\\. Please wait ~10 seconds\\.'
-    );
-
-    const restartChatId = ctx.chat?.id;
-    if (restartChatId) {
-      try {
-        await ctx.api.sendMessage(restartChatId, '👇 Restore your session after restart:', {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '▶️ Continue', callback_data: 'restart:continue' },
-                { text: '📜 Resume', callback_data: 'restart:resume' },
-              ],
-            ],
-          },
-        });
-      } catch (e) {
-        console.debug('[RestartBot] Failed to send restore buttons:', e instanceof Error ? e.message : e);
-      }
+    if (config.AUTO_RESTORE_SESSION) {
+      await replyMd(ctx, '🔁 Restarting this bot instance\\.\n\n⏳ Session will be restored automatically\\.');
+      writeReloadMarker();
+    } else {
+      await replyMd(ctx, '🔁 Restarting this bot instance\\.\n\n⏳ Other bots will not be affected\\. Please wait ~10 seconds\\.');
+      await sendRestoreButtons(ctx);
     }
 
     const { requestRestart } = await import('../../index.js');
@@ -1372,28 +1393,12 @@ export async function handleRestartBot(ctx: Context): Promise<void> {
     return;
   }
 
-  await replyMd(
-    ctx,
-    '🔁 Restarting bot\\.\n\n⏳ Please wait at least *10\\-15 seconds* before checking status or resuming\\.'
-  );
-
-  // Send restore buttons immediately — the process gets killed too fast for a delayed send
-  const restartChatId = ctx.chat?.id;
-  if (restartChatId) {
-    try {
-      await ctx.api.sendMessage(restartChatId, '👇 Restore your session after restart:', {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '▶️ Continue', callback_data: 'restart:continue' },
-              { text: '📜 Resume', callback_data: 'restart:resume' },
-            ],
-          ],
-        },
-      });
-    } catch (e) {
-      console.debug('[RestartBot] Failed to send restore buttons:', e instanceof Error ? e.message : e);
-    }
+  if (config.AUTO_RESTORE_SESSION) {
+    await replyMd(ctx, '🔁 Restarting bot\\.\n\n⏳ Session will be restored automatically\\.');
+    writeReloadMarker();
+  } else {
+    await replyMd(ctx, '🔁 Restarting bot\\.\n\n⏳ Please wait at least *10\\-15 seconds* before checking status or resuming\\.');
+    await sendRestoreButtons(ctx);
   }
 
   try {
@@ -1423,7 +1428,7 @@ export async function handleRestartCallback(ctx: Context): Promise<void> {
   }
 }
 
-export async function handleReload(ctx: Context): Promise<void> {
+export async function handleRebuild(ctx: Context): Promise<void> {
   const args = ctx.message?.text?.split(/\s+/).slice(1).join(' ').trim();
   const reloadAll = args?.toLowerCase() === 'all';
 
@@ -1443,18 +1448,9 @@ export async function handleReload(ctx: Context): Promise<void> {
     return;
   }
 
-  // Step 2: Write auto-resume marker file
-  try {
-    if (!fs.existsSync(RELOAD_MARKER_DIR)) {
-      fs.mkdirSync(RELOAD_MARKER_DIR, { recursive: true, mode: 0o700 });
-    }
-    fs.writeFileSync(
-      RELOAD_MARKER_FILE,
-      JSON.stringify({ timestamp: new Date().toISOString() }),
-      { mode: 0o600 }
-    );
-  } catch (err) {
-    console.error('[Reload] Failed to write marker file:', err);
+  // Step 2: Write auto-resume marker or send manual buttons
+  if (config.AUTO_RESTORE_SESSION) {
+    writeReloadMarker();
   }
 
   // Step 3: Restart
@@ -1465,6 +1461,7 @@ export async function handleReload(ctx: Context): Promise<void> {
       requestRestartAll();
     } else {
       await ctx.reply('✅ Build succeeded. Restarting this instance...');
+      if (!config.AUTO_RESTORE_SESSION) await sendRestoreButtons(ctx);
       const { requestRestart } = await import('../../index.js');
       requestRestart();
     }
@@ -1473,6 +1470,7 @@ export async function handleReload(ctx: Context): Promise<void> {
 
   // Single-instance mode
   await ctx.reply('✅ Build succeeded. Restarting...');
+  if (!config.AUTO_RESTORE_SESSION) await sendRestoreButtons(ctx);
 
   if (!botctlExists()) {
     await replyMd(ctx, 'Build OK but cannot restart: `scripts/claudegram\\-botctl\\.sh` not found\\.');

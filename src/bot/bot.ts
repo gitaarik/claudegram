@@ -56,7 +56,7 @@ import {
   handleBotName,
   handleBotNameCallback,
   handleTopic,
-  handleReload,
+  handleRebuild,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -120,7 +120,7 @@ export async function createBot(): Promise<Bot> {
     { command: 'continue', description: '▶️ Continue last session' },
     { command: 'botstatus', description: '🩺 Show bot process status' },
     { command: 'restartbot', description: '🔁 Restart the bot' },
-    { command: 'reload', description: '🔄 Rebuild and restart with session restore' },
+    { command: 'rebuild', description: '🔄 Rebuild and restart with session restore' },
     { command: 'context', description: '🧠 Show Claude context usage' },
     { command: 'plan', description: '📋 Start planning mode' },
     { command: 'explore', description: '🔍 Explore codebase' },
@@ -154,12 +154,13 @@ export async function createBot(): Promise<Bot> {
   // Apply auth middleware to all updates
   bot.use(authMiddleware);
 
-  // /cancel, /reset, /ping, and /status fire BEFORE sequentialize so they bypass per-chat ordering.
-  // This lets them interrupt or inspect a running query without waiting for it to finish.
+  // These commands fire BEFORE sequentialize so they bypass per-chat ordering.
+  // This lets them interrupt, inspect, or restart even when a query is hung.
   bot.command('cancel', handleCancel);
   bot.command('softreset', handleReset);
   bot.command('ping', handlePing);
   bot.command('status', handleStatus);
+  bot.command('restartbot', handleRestartBot);
 
   // Batch consecutive text messages BEFORE sequentialize.
   // When Telegram splits a long paste into multiple messages, this combines
@@ -182,8 +183,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('topic', handleTopic);
   bot.command('tts', handleTTS);
   bot.command('botstatus', handleBotStatus);
-  bot.command('restartbot', handleRestartBot);
-  bot.command('reload', handleReload);
+  bot.command('rebuild', handleRebuild);
   bot.command('context', handleContext);
 
   bot.command('commands', handleCommands);
