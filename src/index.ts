@@ -137,8 +137,8 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
 
       const projectName = path.basename(session.workingDirectory);
       let msg = `✅ Reloaded and session restored: ${projectName}`;
-      if (entry.lastMessagePreview) {
-        msg += `\n\n💬 Last message:\n${entry.lastMessagePreview}`;
+      if (entry.lastAssistantPreview) {
+        msg += `\n\n💬 Last response:\n${entry.lastAssistantPreview}`;
       }
       await bot.api.sendMessage(chatId, msg, {
         ...(threadId !== undefined ? { message_thread_id: threadId } : {}),

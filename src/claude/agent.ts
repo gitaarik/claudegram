@@ -757,6 +757,14 @@ export async function sendToAgent(
 
   conversationHistory.set(sessionKey, history);
 
+  // Update session history with Claude's response for restore preview
+  if (fullText && !isCancelled(sessionKey)) {
+    const preview = stripReasoningSummary(fullText);
+    if (preview) {
+      sessionManager.updateLastAssistantMessage(sessionKey, preview);
+    }
+  }
+
   // Cache usage for /context and /status commands
   if (resultUsage) {
     chatUsageCache.set(sessionKey, resultUsage);

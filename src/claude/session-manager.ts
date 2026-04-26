@@ -72,6 +72,13 @@ class SessionManager {
     }
   }
 
+  updateLastAssistantMessage(sessionKey: string, preview: string): void {
+    const session = this.sessions.get(sessionKey);
+    if (session) {
+      sessionHistory.updateLastAssistantMessage(sessionKey, session.conversationId, preview);
+    }
+  }
+
   setWorkingDirectory(sessionKey: string, directory: string): Session {
     const existing = this.sessions.get(sessionKey);
     if (existing) {

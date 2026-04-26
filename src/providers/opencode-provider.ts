@@ -429,6 +429,11 @@ export const opencodeProvider: Provider = {
       // Usage extraction is best-effort
     }
 
+    // Update session history with assistant response for restore preview
+    if (fullText) {
+      sessionManager.updateLastAssistantMessage(sessionKey, fullText);
+    }
+
     return {
       text: fullText || 'No response from OpenCode.',
       toolsUsed,
