@@ -11,6 +11,7 @@ const sessionHistoryEntrySchema = z.object({
   projectPath: z.string(),
   projectName: z.string(),
   lastMessagePreview: z.string(),
+  lastAssistantPreview: z.string().optional(),
   createdAt: z.string(),
   lastActivity: z.string(),
 });
@@ -161,6 +162,18 @@ class SessionHistory {
     const entry = history.find((e) => e.conversationId === conversationId);
     if (entry) {
       entry.lastMessagePreview = preview.substring(0, 100);
+      entry.lastActivity = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  updateLastAssistantMessage(sessionKey: string, conversationId: string, preview: string): void {
+    const history = this.data.sessions[sessionKey];
+    if (!history) return;
+
+    const entry = history.find((e) => e.conversationId === conversationId);
+    if (entry) {
+      entry.lastAssistantPreview = preview.substring(0, 200);
       entry.lastActivity = new Date().toISOString();
       this.save();
     }
