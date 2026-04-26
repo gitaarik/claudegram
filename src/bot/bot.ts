@@ -159,6 +159,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('ping', handlePing);
   bot.command('status', handleStatus);
   bot.command('restartbot', handleRestartBot);
+  bot.command('rebuild', handleRebuild);
 
   // Sequentialize: same-chat updates are processed in order.
   // This runs AFTER /cancel so cancel bypasses it.
@@ -175,7 +176,6 @@ export async function createBot(): Promise<Bot> {
   bot.command('topic', handleTopic);
   bot.command('tts', handleTTS);
   bot.command('botstatus', handleBotStatus);
-  bot.command('rebuild', handleRebuild);
   bot.command('context', handleContext);
 
   bot.command('commands', handleCommands);

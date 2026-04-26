@@ -341,6 +341,21 @@ export async function sendToAgent(
   let compactionEvent: { trigger: 'manual' | 'auto'; preTokens: number } | undefined;
   let initEvent: { model: string; sessionId: string } | undefined;
 
+  // Incrementally flush lastAssistantPreview during streaming so mid-task
+  // restarts still have a recent snapshot. Throttled to every 5 seconds.
+  let lastPreviewFlush = 0;
+  const PREVIEW_FLUSH_INTERVAL_MS = 5_000;
+  function maybeFlushPreview() {
+    const now = Date.now();
+    if (fullText && now - lastPreviewFlush >= PREVIEW_FLUSH_INTERVAL_MS) {
+      lastPreviewFlush = now;
+      const preview = stripReasoningSummary(fullText);
+      if (preview) {
+        sessionManager.updateLastAssistantMessage(sessionKey, preview);
+      }
+    }
+  }
+
   // Determine permission mode
   const permissionMode = getPermissionMode(command);
 
@@ -545,6 +560,7 @@ export async function sendToAgent(
           if (block.type === 'text') {
             fullText += block.text;
             onProgress?.(fullText);
+            maybeFlushPreview();
           } else if (block.type === 'tool_use') {
             const toolInput = 'input' in block ? block.input as Record<string, unknown> : {};
             const inputSummary = toolInput.command
@@ -562,6 +578,8 @@ export async function sendToAgent(
               const subagentType = toolInput.subagent_type || 'unknown';
               logAt('basic', `[Claude] SUBAGENT START: ${subagentType} — ${String(taskDesc).substring(0, 100)}`);
             }
+            // Flush preview at tool boundary — text before a tool call is complete
+            maybeFlushPreview();
             // Notify tool start for terminal UI
             onToolStart?.(block.name, toolInput);
           }
