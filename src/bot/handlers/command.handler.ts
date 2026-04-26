@@ -16,7 +16,7 @@ import {
   type ProviderName,
   type ModelInfo,
 } from '../../providers/provider-router.js';
-import { config } from '../../config.js';
+import { config, getReloadMarkerPath } from '../../config.js';
 import { messageSender } from '../../telegram/message-sender.js';
 import { getUptimeFormatted } from '../middleware/stale-filter.js';
 import { getAvailableCommands } from '../../claude/command-parser.js';
@@ -266,19 +266,12 @@ function getActiveTTSVoices(): readonly string[] {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const BOTCTL_PATH = path.join(PROJECT_ROOT, 'scripts', 'claudegram-botctl.sh');
-const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
-
-/** Per-bot marker file so each instance only restores its own sessions. */
-function getReloadMarkerPath(): string {
-  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
-  return path.join(RELOAD_MARKER_DIR, `pending-reload-${botId}.json`);
-}
-
 /** Write the reload marker so autoResumeAfterReload picks up sessions on restart. */
 function writeReloadMarker(): void {
   try {
-    if (!fs.existsSync(RELOAD_MARKER_DIR)) {
-      fs.mkdirSync(RELOAD_MARKER_DIR, { recursive: true, mode: 0o700 });
+    const markerDir = path.dirname(getReloadMarkerPath());
+    if (!fs.existsSync(markerDir)) {
+      fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
     }
     fs.writeFileSync(
       getReloadMarkerPath(),
