@@ -267,7 +267,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const BOTCTL_PATH = path.join(PROJECT_ROOT, 'scripts', 'claudegram-botctl.sh');
 const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
-const RELOAD_MARKER_FILE = path.join(RELOAD_MARKER_DIR, 'pending-reload.json');
+
+/** Per-bot marker file so each instance only restores its own sessions. */
+function getReloadMarkerPath(): string {
+  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
+  return path.join(RELOAD_MARKER_DIR, `pending-reload-${botId}.json`);
+}
+
 /** Write the reload marker so autoResumeAfterReload picks up sessions on restart. */
 function writeReloadMarker(): void {
   try {
@@ -275,7 +281,7 @@ function writeReloadMarker(): void {
       fs.mkdirSync(RELOAD_MARKER_DIR, { recursive: true, mode: 0o700 });
     }
     fs.writeFileSync(
-      RELOAD_MARKER_FILE,
+      getReloadMarkerPath(),
       JSON.stringify({ timestamp: new Date().toISOString() }),
       { mode: 0o600 }
     );
