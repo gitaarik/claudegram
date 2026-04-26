@@ -54,7 +54,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { execFile, spawn } from 'child_process';
+import { execFile, execSync, spawn } from 'child_process';
 import { isMainThread } from 'worker_threads';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
@@ -266,6 +266,8 @@ function getActiveTTSVoices(): readonly string[] {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const BOTCTL_PATH = path.join(PROJECT_ROOT, 'scripts', 'claudegram-botctl.sh');
+const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
+const RELOAD_MARKER_FILE = path.join(RELOAD_MARKER_DIR, 'pending-reload.json');
 const PROJECT_BROWSER_PAGE_SIZE = 8;
 
 type ProjectBrowserState = {
@@ -1432,6 +1434,74 @@ export async function handleRestartCallback(ctx: Context): Promise<void> {
     await handleResume(ctx);
   } else {
     await ctx.answerCallbackQuery();
+  }
+}
+
+export async function handleReload(ctx: Context): Promise<void> {
+  const args = ctx.message?.text?.split(/\s+/).slice(1).join(' ').trim();
+  const reloadAll = args?.toLowerCase() === 'all';
+
+  // Step 1: Build
+  await ctx.reply('🔨 Building...');
+
+  try {
+    execSync('npm run build', {
+      cwd: PROJECT_ROOT,
+      timeout: 120_000,
+      stdio: 'pipe',
+    });
+  } catch (error: unknown) {
+    const err = error as { stderr?: Buffer; message?: string };
+    const stderr = err.stderr?.toString().slice(-500) || err.message || 'Unknown build error';
+    await ctx.reply(`❌ Build failed. Aborting reload.\n\n${stderr.slice(0, 400)}`);
+    return;
+  }
+
+  // Step 2: Write auto-resume marker file
+  try {
+    if (!fs.existsSync(RELOAD_MARKER_DIR)) {
+      fs.mkdirSync(RELOAD_MARKER_DIR, { recursive: true, mode: 0o700 });
+    }
+    fs.writeFileSync(
+      RELOAD_MARKER_FILE,
+      JSON.stringify({ timestamp: new Date().toISOString() }),
+      { mode: 0o600 }
+    );
+  } catch (err) {
+    console.error('[Reload] Failed to write marker file:', err);
+  }
+
+  // Step 3: Restart
+  if (!isMainThread) {
+    if (reloadAll) {
+      await ctx.reply('✅ Build succeeded. Restarting all instances...');
+      const { requestRestartAll } = await import('../../index.js');
+      requestRestartAll();
+    } else {
+      await ctx.reply('✅ Build succeeded. Restarting this instance...');
+      const { requestRestart } = await import('../../index.js');
+      requestRestart();
+    }
+    return;
+  }
+
+  // Single-instance mode
+  await ctx.reply('✅ Build succeeded. Restarting...');
+
+  if (!botctlExists()) {
+    await replyMd(ctx, 'Build OK but cannot restart: `scripts/claudegram\\-botctl\\.sh` not found\\.');
+    return;
+  }
+
+  try {
+    const child = spawn(
+      BOTCTL_PATH,
+      ['recover'],
+      { cwd: PROJECT_ROOT, detached: true, stdio: 'ignore', env: { ...process.env, MODE: config.BOT_MODE } }
+    );
+    child.unref();
+  } catch (error) {
+    console.error('[Reload] Failed to restart via botctl:', sanitizeError(error));
   }
 }
 

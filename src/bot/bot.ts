@@ -56,6 +56,7 @@ import {
   handleBotName,
   handleBotNameCallback,
   handleTopic,
+  handleReload,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -118,6 +119,7 @@ export async function createBot(): Promise<Bot> {
     { command: 'continue', description: '▶️ Continue last session' },
     { command: 'botstatus', description: '🩺 Show bot process status' },
     { command: 'restartbot', description: '🔁 Restart the bot' },
+    { command: 'reload', description: '🔄 Rebuild and restart with session restore' },
     { command: 'context', description: '🧠 Show Claude context usage' },
     { command: 'plan', description: '📋 Start planning mode' },
     { command: 'explore', description: '🔍 Explore codebase' },
@@ -173,6 +175,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('tts', handleTTS);
   bot.command('botstatus', handleBotStatus);
   bot.command('restartbot', handleRestartBot);
+  bot.command('reload', handleReload);
   bot.command('context', handleContext);
 
   bot.command('commands', handleCommands);
