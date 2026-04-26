@@ -217,6 +217,14 @@ Use it when the user asks to transcribe, download, or extract media from a URL â
 For voice notes sent directly in chat, the user should use /transcribe instead.
 The user also has an /extract Telegram command for direct use.`;
 
+const SEND_FILE_TOOL_PROMPT = `
+
+Send File Tool:
+You have a claudegram_send_file MCP tool that sends files to the user via Telegram.
+Use it after creating or generating files (SVGs, images, PDFs, reports, code bundles, etc.) to deliver them directly.
+The file must be within the current working directory or /tmp. Maximum size: 50MB.
+When you generate a file and the user would benefit from receiving it, proactively send it â€” no need to ask.`;
+
 const REASONING_SUMMARY_INSTRUCTIONS = `
 
 Reasoning Summary (required when enabled):
@@ -226,6 +234,7 @@ Reasoning Summary (required when enabled):
 - Skip the summary for very short acknowledgements or pure error messages.`;
 
 const TOOL_PROMPTS = [
+  SEND_FILE_TOOL_PROMPT,
   config.REDDIT_ENABLED ? REDDIT_TOOL_PROMPT : '',
   config.VREDDIT_ENABLED ? REDDIT_VIDEO_TOOL_PROMPT : '',
   config.MEDIUM_ENABLED ? MEDIUM_TOOL_PROMPT : '',
