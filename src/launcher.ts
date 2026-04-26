@@ -235,6 +235,17 @@ function spawnWorker(inst: ResolvedInstance): Worker {
         sibling.terminate();
         worker.postMessage({ type: 'restart_sibling_result', success: true, name: targetName });
       }
+    } else if (msg?.type === 'restart_all') {
+      console.log(`[Launcher] ${inst.name} requested restart of ALL instances`);
+      for (const i of instances) {
+        pendingRestarts.add(i.name);
+      }
+      // Stagger terminations to avoid port conflicts on respawn
+      let delay = 0;
+      for (const [, w] of workers) {
+        setTimeout(() => w.terminate(), delay);
+        delay += 200;
+      }
     }
   });
 

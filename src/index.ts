@@ -1,9 +1,17 @@
 import { run } from '@grammyjs/runner';
 import { isMainThread, parentPort } from 'worker_threads';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { createBot } from './bot/bot.js';
 import { config } from './config.js';
 import { preventSleep, allowSleep } from './utils/caffeinate.js';
 import { stopCleanup } from './telegram/deduplication.js';
+import { sessionManager } from './claude/session-manager.js';
+import { sessionHistory } from './claude/session-history.js';
+import { clearConversation } from './providers/provider-router.js';
+import { parseSessionKey } from './utils/session-key.js';
+import type { Bot } from 'grammy';
 
 // When running as a worker thread (multi-instance mode), prefix all console
 // output with the instance name so logs from different bots are distinguishable.
@@ -61,6 +69,87 @@ export function requestSiblingRestart(name: string): Promise<{ success: boolean;
   });
 }
 
+/** Ask the launcher to restart ALL workers. Returns false if not in worker mode. */
+export function requestRestartAll(): boolean {
+  if (!isMainThread && parentPort) {
+    parentPort.postMessage({ type: 'restart_all' });
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-resume after /reload
+// ---------------------------------------------------------------------------
+
+const RELOAD_MARKER_FILE = path.join(os.homedir(), '.claudegram', 'pending-reload.json');
+const RELOAD_MARKER_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+async function autoResumeAfterReload(bot: Bot): Promise<void> {
+  if (!fs.existsSync(RELOAD_MARKER_FILE)) return;
+
+  let marker: { timestamp: string };
+  try {
+    const raw = fs.readFileSync(RELOAD_MARKER_FILE, 'utf-8');
+    marker = JSON.parse(raw);
+  } catch {
+    try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+    return;
+  }
+
+  // Validate timestamp freshness
+  const age = Date.now() - new Date(marker.timestamp).getTime();
+  if (age > RELOAD_MARKER_MAX_AGE_MS || age < 0) {
+    console.log('[AutoResume] Stale marker file, ignoring');
+    try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+    return;
+  }
+
+  // Delete marker immediately to prevent double-processing or crash loops
+  try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+
+  // Resume all recent active sessions that belong to this instance
+  const activeSessions = sessionHistory.getAllActiveSessions();
+  const allowedIds = new Set([
+    ...config.ALLOWED_USER_IDS,
+    ...config.ALLOWED_GROUP_IDS,
+  ]);
+  let resumed = 0;
+
+  for (const [sessionKey, entry] of activeSessions) {
+    const { chatId, threadId } = parseSessionKey(sessionKey);
+
+    // Only resume sessions belonging to this bot instance
+    if (!allowedIds.has(chatId)) continue;
+
+    // Only resume sessions with recent activity (within last hour)
+    const lastActivity = new Date(entry.lastActivity).getTime();
+    if (Date.now() - lastActivity > 60 * 60 * 1000) continue;
+
+    // Only resume sessions that have a Claude session ID
+    if (!entry.claudeSessionId) continue;
+
+    try {
+      const session = sessionManager.resumeLastSession(sessionKey);
+      if (!session) continue;
+
+      clearConversation(sessionKey);
+
+      const projectName = path.basename(session.workingDirectory);
+      await bot.api.sendMessage(chatId, `✅ Reloaded and session restored: ${projectName}`, {
+        ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+      });
+      resumed++;
+    } catch (err) {
+      console.error(`[AutoResume] Failed to resume ${sessionKey}:`, err);
+    }
+  }
+
+  if (resumed > 0) {
+    console.log(`[AutoResume] Restored ${resumed} session(s)`);
+  }
+}
+
 async function main() {
   console.log('🤖 Starting Claudegram...');
   console.log(`📋 Allowed users: ${config.ALLOWED_USER_IDS.join(', ')}`);
@@ -80,6 +169,13 @@ async function main() {
   // with per-chat ordering enforced by the sequentialize middleware in bot.ts.
   // This lets /cancel bypass the per-chat queue and interrupt running queries.
   const runner = run(bot);
+
+  // Auto-resume sessions after a /reload
+  try {
+    await autoResumeAfterReload(bot);
+  } catch (err) {
+    console.error('[AutoResume] Failed:', err);
+  }
 
   // Liveness heartbeat: periodically verify the bot can still reach the
   // Telegram API. If the runner has stopped or getMe fails repeatedly,
