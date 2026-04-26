@@ -340,12 +340,14 @@ export const opencodeProvider: Provider = {
 
     // Background timer that periodically flushes lastAssistantPreview to disk
     let lastFlushedText = '';
-    const previewFlushTimer = setInterval(() => {
+    let firstTextFlushed = false;
+    function flushPreview() {
       if (fullText && fullText !== lastFlushedText) {
         lastFlushedText = fullText;
         sessionManager.updateLastAssistantMessage(sessionKey, fullText);
       }
-    }, 5_000);
+    }
+    const previewFlushTimer = setInterval(flushPreview, 5_000);
 
     // Stream events for async responses
 
@@ -373,6 +375,10 @@ export const opencodeProvider: Provider = {
           if (part.type === 'text') {
             fullText = part.text || '';
             onProgress?.(fullText);
+            if (!firstTextFlushed) {
+              firstTextFlushed = true;
+              flushPreview();
+            }
           } else if (part.type === 'tool') {
             const toolState = part.state as { status: string } | undefined;
             if (toolState?.status === 'running') {

@@ -354,7 +354,8 @@ export async function sendToAgent(
   // This runs independently of SDK events so that long tool executions (where
   // the for-await loop is blocked) still get a recent snapshot saved.
   let lastFlushedText = '';
-  const previewFlushTimer = setInterval(() => {
+  let firstTextFlushed = false;
+  function flushPreview() {
     if (fullText && fullText !== lastFlushedText) {
       lastFlushedText = fullText;
       const preview = stripReasoningSummary(fullText);
@@ -362,7 +363,8 @@ export async function sendToAgent(
         sessionManager.updateLastAssistantMessage(sessionKey, preview);
       }
     }
-  }, 5_000);
+  }
+  const previewFlushTimer = setInterval(flushPreview, 5_000);
 
   // Determine permission mode
   const permissionMode = getPermissionMode(command);
@@ -600,6 +602,11 @@ export async function sendToAgent(
           if (block.type === 'text') {
             fullText += block.text;
             onProgress?.(fullText);
+            // Flush immediately on first text so early restarts have something
+            if (!firstTextFlushed) {
+              firstTextFlushed = true;
+              flushPreview();
+            }
           } else if (block.type === 'tool_use') {
             const toolInput = 'input' in block ? block.input as Record<string, unknown> : {};
             const inputSummary = toolInput.command

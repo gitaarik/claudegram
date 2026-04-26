@@ -105,6 +105,8 @@ class SessionHistory {
       projectPath,
       projectName,
       lastMessagePreview: lastMessagePreview.substring(0, 100),
+      lastAssistantPreview: existingEntry?.lastAssistantPreview,
+      topic: existingEntry?.topic,
       createdAt:
         existingIndex >= 0
           ? history[existingIndex].createdAt
