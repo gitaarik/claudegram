@@ -75,15 +75,21 @@ const sessionTopics: Map<string, string> = new Map();
 /** Build the full bot display name from base name, project, and topic. */
 function buildBotDisplayName(sessionKey: string): string {
   const session = sessionManager.getSession(sessionKey);
-  const parts = [config.BOT_NAME];
-  if (session?.workingDirectory) {
-    parts.push(path.basename(session.workingDirectory));
-  }
   const topic = sessionTopics.get(sessionKey);
+  const project = session?.workingDirectory ? path.basename(session.workingDirectory) : '';
+
+  const parts: string[] = [];
   if (topic) {
+    // Topic first: "dark mode — myproject — Claudegram"
     parts.push(topic);
+    if (project) parts.push(project);
+    parts.push(config.BOT_NAME);
+  } else {
+    // No topic: "Claudegram — myproject"
+    parts.push(config.BOT_NAME);
+    if (project) parts.push(project);
   }
-  return parts.join(' | ').slice(0, 64);
+  return parts.join(' — ').slice(0, 64);
 }
 
 /** Update the Telegram bot display name to reflect the active project and topic. */

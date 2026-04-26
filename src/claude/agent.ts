@@ -222,7 +222,7 @@ const SET_TOPIC_TOOL_PROMPT = `
 Auto-Topic Tool:
 You have a claudegram_set_topic MCP tool that updates the conversation topic shown in the Telegram bot display name.
 Call it PROACTIVELY when the user starts working on a new topic or the focus shifts significantly.
-Keep topics extremely short (1-4 words) — the bot name format is "Name | project | topic" with a 64-char limit.
+Keep topics extremely short (1-4 words) — the bot name format is "topic — project — Name" with a 64-char limit.
 Good examples: "auth bug", "CI fix", "dark mode", "API docs", "test suite"
 Bad examples: "Working on authentication bug in login module" (too long)
 Do NOT call it for every message — only when the work topic meaningfully changes.
