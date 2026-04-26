@@ -49,7 +49,7 @@ interface InstancesConfig {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Strip JSON5-style // comments (but not inside strings). */
+/** Strip full-line // comments (lines whose non-whitespace content starts with //). */
 function stripJsonComments(text: string): string {
   return text.replace(/^\s*\/\/.*$/gm, '');
 }

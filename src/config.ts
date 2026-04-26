@@ -189,7 +189,7 @@ const envSchema = z.object({
   // pastes) into a single prompt. 0 = disabled.
   MESSAGE_BATCH_TIMEOUT_MS: z
     .string()
-    .default('2000')
+    .default('0')
     .transform((val) => parseInt(val, 10)),
   // Cancel behaviour: auto-cancel running query when user sends a new message
   CANCEL_ON_NEW_MESSAGE: z
