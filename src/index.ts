@@ -2,9 +2,8 @@ import { run } from '@grammyjs/runner';
 import { isMainThread, parentPort } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { createBot } from './bot/bot.js';
-import { config } from './config.js';
+import { config, BOT_ID, getReloadMarkerPath } from './config.js';
 import { preventSleep, allowSleep } from './utils/caffeinate.js';
 import { stopCleanup } from './telegram/deduplication.js';
 import { sessionManager } from './claude/session-manager.js';
@@ -84,14 +83,7 @@ export function requestRestartAll(): boolean {
 // Auto-resume after /rebuild or /restartbot
 // ---------------------------------------------------------------------------
 
-const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
 const RELOAD_MARKER_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
-
-/** Per-bot marker file so each instance only restores its own sessions. */
-function getReloadMarkerPath(): string {
-  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
-  return path.join(RELOAD_MARKER_DIR, `pending-reload-${botId}.json`);
-}
 
 async function autoResumeAfterReload(bot: Bot): Promise<void> {
   const markerFile = getReloadMarkerPath();
@@ -185,8 +177,7 @@ async function main() {
   console.log(`📝 Mode: ${config.STREAMING_MODE}`);
 
   // Scope session history to this bot instance so multi-bot setups don't cross-restore
-  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
-  sessionHistory.initForBot(botId);
+  sessionHistory.initForBot(BOT_ID);
 
   // Prevent system sleep on macOS (only when running standalone, not as worker)
   if (isMainThread) preventSleep();

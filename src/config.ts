@@ -249,3 +249,19 @@ if (!parsed.success) {
 export const config = parsed.data;
 
 export type Config = typeof config;
+
+// ---------------------------------------------------------------------------
+// Derived helpers (used by index.ts, command.handler.ts, session-history.ts)
+// ---------------------------------------------------------------------------
+
+import * as os from 'os';
+
+/** Numeric bot ID extracted from the Telegram token (e.g. "123456" from "123456:ABC..."). */
+export const BOT_ID = config.TELEGRAM_BOT_TOKEN.split(':')[0];
+
+const CLAUDEGRAM_DIR = path.join(os.homedir(), '.claudegram');
+
+/** Per-bot reload marker file path so multi-instance setups don't cross-restore. */
+export function getReloadMarkerPath(): string {
+  return path.join(CLAUDEGRAM_DIR, `pending-reload-${BOT_ID}.json`);
+}
