@@ -96,6 +96,24 @@ async function updateBotName(ctx: Context, sessionKey: string, projectPath: stri
   }
 }
 
+/**
+ * Set the session topic programmatically (used by MCP tool).
+ * Returns the new display name string.
+ */
+export function setSessionTopic(sessionKey: string, topic: string): string {
+  if (topic) {
+    sessionTopics.set(sessionKey, topic);
+  } else {
+    sessionTopics.delete(sessionKey);
+  }
+  return buildBotDisplayName(sessionKey);
+}
+
+/** Get the current session topic. */
+export function getSessionTopic(sessionKey: string): string | undefined {
+  return sessionTopics.get(sessionKey);
+}
+
 export async function handleTopic(ctx: Context): Promise<void> {
   const keyInfo = getSessionKeyFromCtx(ctx);
   if (!keyInfo) return;
