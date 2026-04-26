@@ -11,7 +11,7 @@ import { sessionHistory } from './claude/session-history.js';
 import { clearConversation } from './providers/provider-router.js';
 import { parseSessionKey } from './utils/session-key.js';
 import { setSessionTopic } from './bot/handlers/command.handler.js';
-import { isBotNameEnabled } from './telegram/botname-settings.js';
+import { isBotNameEnabled, rateLimitedSetMyName } from './telegram/botname-settings.js';
 import type { Bot } from 'grammy';
 
 // When running as a worker thread (multi-instance mode), prefix all console
@@ -140,7 +140,7 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
       if (entry.topic && isBotNameEnabled(sessionKey)) {
         const displayName = setSessionTopic(sessionKey, entry.topic);
         try {
-          await bot.api.setMyName(displayName);
+          await rateLimitedSetMyName((n) => bot.api.setMyName(n), displayName);
         } catch (e) {
           console.debug('[AutoResume] Failed to update bot name:', e instanceof Error ? e.message : e);
         }

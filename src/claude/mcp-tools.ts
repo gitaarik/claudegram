@@ -14,7 +14,7 @@ import * as path from 'path';
 import { config } from '../config.js';
 import { sessionManager } from './session-manager.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../utils/workspace-guard.js';
-import { isBotNameEnabled } from '../telegram/botname-settings.js';
+import { isBotNameEnabled, rateLimitedSetMyName } from '../telegram/botname-settings.js';
 import { setSessionTopic } from '../bot/handlers/command.handler.js';
 
 // Lazy imports to avoid circular deps and unnecessary module loading
@@ -420,7 +420,7 @@ function setTopicTool(toolsCtx: McpToolsContext) {
         const trimmedTopic = topic.trim();
         const displayName = setSessionTopic(sessionKey, trimmedTopic);
 
-        await toolsCtx.telegramCtx.api.setMyName(displayName);
+        await rateLimitedSetMyName((n) => toolsCtx.telegramCtx.api.setMyName(n), displayName);
 
         return {
           content: [{

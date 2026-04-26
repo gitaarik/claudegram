@@ -34,7 +34,7 @@ import { isMediumUrl, fetchMediumArticle, FreediumArticle } from '../../medium/f
 import { escapeMarkdownV2 as esc } from '../../telegram/markdown.js';
 import { getTTSSettings, setTTSEnabled, setTTSVoice, setTTSAutoplay } from '../../tts/tts-settings.js';
 import { getTerminalUISettings, setTerminalUIEnabled } from '../../telegram/terminal-settings.js';
-import { getBotNameSettings, setBotNameEnabled, isBotNameEnabled } from '../../telegram/botname-settings.js';
+import { getBotNameSettings, setBotNameEnabled, isBotNameEnabled, rateLimitedSetMyName } from '../../telegram/botname-settings.js';
 import { getTelegraphSettings, setTelegraphEnabled } from '../../telegram/telegraph-settings.js';
 import { maybeSendVoiceReply } from '../../tts/voice-reply.js';
 import { transcribeFile, downloadTelegramAudio } from '../../audio/transcribe.js';
@@ -97,7 +97,7 @@ function buildBotDisplayName(sessionKey: string): string {
 async function updateBotName(ctx: Context, sessionKey: string, projectPath: string): Promise<void> {
   if (!isBotNameEnabled(sessionKey)) return;
   try {
-    await ctx.api.setMyName(buildBotDisplayName(sessionKey));
+    await rateLimitedSetMyName((n) => ctx.api.setMyName(n), buildBotDisplayName(sessionKey));
   } catch (err) {
     console.error('[Bot] Failed to update bot name:', err);
   }
@@ -134,7 +134,7 @@ export async function handleTopic(ctx: Context): Promise<void> {
   const displayName = setSessionTopic(sessionKey, topic);
   if (isBotNameEnabled(sessionKey)) {
     try {
-      await ctx.api.setMyName(displayName);
+      await rateLimitedSetMyName((n) => ctx.api.setMyName(n), displayName);
     } catch (err) {
       console.error('[Bot] Failed to update bot name:', err);
     }
@@ -201,7 +201,7 @@ export async function handleBotNameCallback(ctx: Context): Promise<void> {
   // Reset bot name to base when disabling
   if (!newState) {
     try {
-      await ctx.api.setMyName(config.BOT_NAME);
+      await rateLimitedSetMyName((n) => ctx.api.setMyName(n), config.BOT_NAME);
     } catch (err) {
       console.error('[Bot] Failed to reset bot name:', err);
     }
@@ -1539,7 +1539,7 @@ export async function handleReset(ctx: Context): Promise<void> {
   setSessionTopic(sessionKey, '');
   if (isBotNameEnabled(sessionKey)) {
     try {
-      await ctx.api.setMyName(buildBotDisplayName(sessionKey));
+      await rateLimitedSetMyName((n) => ctx.api.setMyName(n), buildBotDisplayName(sessionKey));
     } catch (err) {
       console.debug('[Reset] Failed to reset bot name:', err instanceof Error ? err.message : err);
     }
