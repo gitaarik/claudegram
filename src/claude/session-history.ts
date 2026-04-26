@@ -209,6 +209,17 @@ class SessionHistory {
     }
   }
 
+  clearLastAssistantPreview(sessionKey: string, conversationId: string): void {
+    const history = this.data.sessions[sessionKey];
+    if (!history) return;
+
+    const entry = history.find((e) => e.conversationId === conversationId);
+    if (entry) {
+      entry.lastAssistantPreview = undefined;
+      this.save();
+    }
+  }
+
   updateTopic(sessionKey: string, topic: string | undefined): void {
     const history = this.data.sessions[sessionKey];
     if (!history || history.length === 0) return;
