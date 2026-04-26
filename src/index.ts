@@ -82,18 +82,25 @@ export function requestRestartAll(): boolean {
 // Auto-resume after /rebuild or /restartbot
 // ---------------------------------------------------------------------------
 
-const RELOAD_MARKER_FILE = path.join(os.homedir(), '.claudegram', 'pending-reload.json');
+const RELOAD_MARKER_DIR = path.join(os.homedir(), '.claudegram');
 const RELOAD_MARKER_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Per-bot marker file so each instance only restores its own sessions. */
+function getReloadMarkerPath(): string {
+  const botId = config.TELEGRAM_BOT_TOKEN.split(':')[0];
+  return path.join(RELOAD_MARKER_DIR, `pending-reload-${botId}.json`);
+}
+
 async function autoResumeAfterReload(bot: Bot): Promise<void> {
-  if (!fs.existsSync(RELOAD_MARKER_FILE)) return;
+  const markerFile = getReloadMarkerPath();
+  if (!fs.existsSync(markerFile)) return;
 
   let marker: { timestamp: string };
   try {
-    const raw = fs.readFileSync(RELOAD_MARKER_FILE, 'utf-8');
+    const raw = fs.readFileSync(markerFile, 'utf-8');
     marker = JSON.parse(raw);
   } catch {
-    try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+    try { fs.unlinkSync(markerFile); } catch {}
     return;
   }
 
@@ -101,12 +108,12 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
   const age = Date.now() - new Date(marker.timestamp).getTime();
   if (age > RELOAD_MARKER_MAX_AGE_MS || age < 0) {
     console.log('[AutoResume] Stale marker file, ignoring');
-    try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+    try { fs.unlinkSync(markerFile); } catch {}
     return;
   }
 
   // Delete marker immediately to prevent double-processing or crash loops
-  try { fs.unlinkSync(RELOAD_MARKER_FILE); } catch {}
+  try { fs.unlinkSync(markerFile); } catch {}
 
   // Resume all recent active sessions that belong to this instance
   const activeSessions = sessionHistory.getAllActiveSessions();
