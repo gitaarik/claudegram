@@ -14,6 +14,8 @@ import * as path from 'path';
 import { config } from '../config.js';
 import { sessionManager } from './session-manager.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../utils/workspace-guard.js';
+import { isBotNameEnabled } from '../telegram/botname-settings.js';
+import { setSessionTopic } from '../bot/handlers/command.handler.js';
 
 // Lazy imports to avoid circular deps and unnecessary module loading
 async function importReddit() {
@@ -63,6 +65,10 @@ function buildToolList(toolsCtx: McpToolsContext) {
     listProjectsTool(toolsCtx),
     switchProjectTool(toolsCtx),
   ];
+
+  if (config.DYNAMIC_BOT_NAME) {
+    tools.push(setTopicTool(toolsCtx));
+  }
 
   if (config.REDDIT_ENABLED) {
     tools.push(fetchRedditTool(toolsCtx));
@@ -296,6 +302,54 @@ function extractMediaTool(toolsCtx: McpToolsContext) {
         if (result) {
           cleanupExtractResult(result);
         }
+      }
+    }
+  );
+}
+
+function setTopicTool(toolsCtx: McpToolsContext) {
+  return tool(
+    'claudegram_set_topic',
+    'Update the conversation topic shown in the bot display name. Call this proactively when the work topic changes. Pass an empty string to clear. Keep topics very short (1-4 words).',
+    {
+      topic: z.string().describe(
+        'Short topic label (1-4 words, e.g. "auth refactor", "CI fix", "dark mode"). Empty string to clear.'
+      ),
+    },
+    async ({ topic }) => {
+      try {
+        const { sessionKey } = toolsCtx;
+
+        if (!isBotNameEnabled(sessionKey)) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Dynamic bot name is disabled for this session. Topic not updated.',
+            }],
+          };
+        }
+
+        const trimmedTopic = topic.trim();
+        const displayName = setSessionTopic(sessionKey, trimmedTopic);
+
+        await toolsCtx.telegramCtx.api.setMyName(displayName);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: trimmedTopic
+              ? `Topic set to "${trimmedTopic}". Bot name: ${displayName}`
+              : `Topic cleared. Bot name: ${displayName}`,
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Failed to set topic: ${error instanceof Error ? error.message : String(error)}`,
+          }],
+          isError: true,
+        };
       }
     }
   );
