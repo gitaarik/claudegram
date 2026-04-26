@@ -338,6 +338,17 @@ export const opencodeProvider: Provider = {
       abortController.signal.addEventListener('abort', onAbort, { once: true });
     }
 
+    // Incremental preview flush so mid-task restarts have a recent snapshot
+    let lastPreviewFlush = 0;
+    const PREVIEW_FLUSH_INTERVAL_MS = 5_000;
+    function maybeFlushPreview() {
+      const now = Date.now();
+      if (fullText && now - lastPreviewFlush >= PREVIEW_FLUSH_INTERVAL_MS) {
+        lastPreviewFlush = now;
+        sessionManager.updateLastAssistantMessage(sessionKey, fullText);
+      }
+    }
+
     // Stream events for async responses
 
     try {
@@ -364,6 +375,7 @@ export const opencodeProvider: Provider = {
           if (part.type === 'text') {
             fullText = part.text || '';
             onProgress?.(fullText);
+            maybeFlushPreview();
           } else if (part.type === 'tool') {
             const toolState = part.state as { status: string } | undefined;
             if (toolState?.status === 'running') {

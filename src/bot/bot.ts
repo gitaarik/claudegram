@@ -161,6 +161,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('ping', handlePing);
   bot.command('status', handleStatus);
   bot.command('restartbot', handleRestartBot);
+  bot.command('rebuild', handleRebuild);
 
   // Batch consecutive text messages BEFORE sequentialize.
   // When Telegram splits a long paste into multiple messages, this combines
@@ -183,7 +184,6 @@ export async function createBot(): Promise<Bot> {
   bot.command('topic', handleTopic);
   bot.command('tts', handleTTS);
   bot.command('botstatus', handleBotStatus);
-  bot.command('rebuild', handleRebuild);
   bot.command('context', handleContext);
 
   bot.command('commands', handleCommands);
