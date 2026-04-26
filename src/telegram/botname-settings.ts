@@ -95,3 +95,52 @@ export function setBotNameEnabled(sessionKey: string, enabled: boolean): void {
 export function isBotNameEnabled(sessionKey: string): boolean {
   return getBotNameSettings(sessionKey).enabled;
 }
+
+// ---------------------------------------------------------------------------
+// Rate-limited setMyName wrapper
+// ---------------------------------------------------------------------------
+
+const MIN_NAME_UPDATE_INTERVAL_MS = 60_000; // 1 minute
+let lastNameUpdateTime = 0;
+let pendingName: string | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Rate-limited wrapper around `bot.api.setMyName()`.
+ * At most one call per minute; if called more frequently the latest name is
+ * queued and applied when the cooldown expires.
+ */
+export async function rateLimitedSetMyName(
+  apiCall: (name: string) => Promise<unknown>,
+  name: string,
+): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastNameUpdateTime;
+
+  if (elapsed >= MIN_NAME_UPDATE_INTERVAL_MS) {
+    // Cooldown expired — apply immediately
+    lastNameUpdateTime = now;
+    pendingName = null;
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    await apiCall(name);
+  } else {
+    // Still in cooldown — queue the latest name
+    pendingName = name;
+    if (!pendingTimer) {
+      const delay = MIN_NAME_UPDATE_INTERVAL_MS - elapsed;
+      pendingTimer = setTimeout(async () => {
+        pendingTimer = null;
+        if (pendingName !== null) {
+          const queuedName = pendingName;
+          pendingName = null;
+          lastNameUpdateTime = Date.now();
+          try {
+            await apiCall(queuedName);
+          } catch (err) {
+            console.error('[BotName] Deferred name update failed:', err instanceof Error ? err.message : err);
+          }
+        }
+      }, delay);
+    }
+  }
+}
