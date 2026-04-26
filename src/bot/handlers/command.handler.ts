@@ -957,22 +957,27 @@ function listMarkdownFiles(projectPath: string, maxDepth: number = 3): string[] 
 
 export async function handleStatus(ctx: Context): Promise<void> {
   const keyInfo = getSessionKeyFromCtx(ctx);
-  if (!keyInfo) return;
-  const { sessionKey } = keyInfo;
-  const { chatId } = parseSessionKey(sessionKey);
-
-  const session = sessionManager.getSession(sessionKey);
-
-  if (!session) {
-    await replyMd(ctx, 'ℹ️ No active session\\.\n\nUse `/project /path/to/project` to get started\\.');
+  if (!keyInfo) {
+    await ctx.reply('❌ Could not determine chat context for /status.');
     return;
   }
 
-  const currentModel = getModel(chatId);
-  const provider = getActiveProviderName(chatId);
-  const dangerousMode = isDangerousMode() ? '⚠️ ENABLED' : 'Disabled';
+  try {
+    const { sessionKey } = keyInfo;
+    const { chatId } = parseSessionKey(sessionKey);
 
-  let status = `📊 *Session Status*
+    const session = sessionManager.getSession(sessionKey);
+
+    if (!session) {
+      await replyMd(ctx, 'ℹ️ No active session\\.\n\nUse `/project /path/to/project` to get started\\.');
+      return;
+    }
+
+    const currentModel = getModel(chatId);
+    const provider = getActiveProviderName(chatId);
+    const dangerousMode = isDangerousMode() ? '⚠️ ENABLED' : 'Disabled';
+
+    let status = `📊 *Session Status*
 
 • *Working Directory:* \`${esc(session.workingDirectory)}\`
 • *Session ID:* \`${esc(session.conversationId)}\`
@@ -984,16 +989,21 @@ export async function handleStatus(ctx: Context): Promise<void> {
 • *Dangerous Mode:* ${esc(dangerousMode)}
 • *Uptime:* ${esc(getUptimeFormatted())}`;
 
-  const cached = getCachedUsage(sessionKey);
-  if (cached) {
-    const pct = cached.contextWindow > 0
-      ? Math.round(((cached.inputTokens + cached.outputTokens) / cached.contextWindow) * 100)
-      : 0;
-    status += `\n• *Context:* ${esc(String(pct))}% \\(${esc(fmtTokens(cached.inputTokens + cached.outputTokens))}/${esc(fmtTokens(cached.contextWindow))}\\)`;
-    status += `\n• *Session Cost:* \\$${esc(cached.totalCostUsd.toFixed(4))}`;
-  }
+    const cached = getCachedUsage(sessionKey);
+    if (cached) {
+      const pct = cached.contextWindow > 0
+        ? Math.round(((cached.inputTokens + cached.outputTokens) / cached.contextWindow) * 100)
+        : 0;
+      status += `\n• *Context:* ${esc(String(pct))}% \\(${esc(fmtTokens(cached.inputTokens + cached.outputTokens))}/${esc(fmtTokens(cached.contextWindow))}\\)`;
+      status += `\n• *Session Cost:* \\$${esc(cached.totalCostUsd.toFixed(4))}`;
+    }
 
-  await replyMd(ctx, status);
+    await replyMd(ctx, status);
+  } catch (err) {
+    console.error('[Status] Error:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`❌ /status failed: ${msg}`).catch(() => {});
+  }
 }
 
 // Runtime streaming mode (can be toggled, defaults to config)
