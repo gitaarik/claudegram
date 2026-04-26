@@ -284,6 +284,7 @@ export const opencodeProvider: Provider = {
       throw new Error('No active session. Use /project to set working directory.');
     }
     sessionManager.updateActivity(sessionKey, message);
+    sessionManager.clearLastAssistantPreview(sessionKey);
 
     // Send prompt
     const promptResult = await c.session.prompt({

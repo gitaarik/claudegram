@@ -328,6 +328,10 @@ export async function sendToAgent(
 
   sessionManager.updateActivity(sessionKey, message);
 
+  // Clear stale assistant preview from previous query so a mid-task restart
+  // doesn't show an old response alongside the new prompt
+  sessionManager.clearLastAssistantPreview(sessionKey);
+
   // Get or initialize conversation history
   let history = conversationHistory.get(sessionKey) || [];
 

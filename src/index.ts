@@ -159,6 +159,9 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
       if (entry.topic) {
         msg += ` (topic: ${entry.topic})`;
       }
+      if (entry.lastMessagePreview) {
+        msg += `\n\n📝 Last prompt:\n${entry.lastMessagePreview}`;
+      }
       if (entry.lastAssistantPreview) {
         msg += `\n\n💬 Last response:\n${entry.lastAssistantPreview}`;
       }
