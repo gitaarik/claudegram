@@ -89,6 +89,7 @@ const envSchema = z.object({
     .string()
     .default('5')
     .transform((val) => parseInt(val, 10)),
+  AUTO_RESTORE_SESSION: z.string().default('false').transform(toBool),
   REDDITFETCH_JSON_THRESHOLD_CHARS: z
     .string()
     .default('8000')
