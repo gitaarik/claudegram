@@ -4,6 +4,7 @@
  */
 
 import { formatDuration } from '../utils/agent-timer.js';
+import { config } from '../config.js';
 
 // Tool icons (emoji-based for mobile friendliness)
 export const TOOL_ICONS: Record<string, string> = {
@@ -135,26 +136,36 @@ export function extractToolDetail(toolName: string, input: Record<string, unknow
     return typeof val === 'string' ? val : undefined;
   };
 
+  const verbose = config.TERMINAL_UI_VERBOSE;
+
   switch (toolName) {
     case 'Read':
     case 'Write':
     case 'Edit':
     case 'NotebookEdit':
-      return truncatePath(str('file_path'));
+      return verbose ? str('file_path') : truncatePath(str('file_path'));
     case 'Bash':
-      return truncateCommand(str('command'));
+      return verbose ? extractFirstLine(str('command')) : truncateCommand(str('command'));
     case 'Grep':
       return str('pattern');
     case 'Glob':
       return str('pattern');
     case 'WebFetch':
     case 'WebSearch':
-      return truncateUrl(str('url') || str('query'));
+      return verbose ? (str('url') || str('query')) : truncateUrl(str('url') || str('query'));
     case 'Task':
-      return str('description');
+      return verbose ? str('description') : truncateCommand(str('description'));
     default:
       return undefined;
   }
+}
+
+/**
+ * Extract the first line of a command (no length limit)
+ */
+function extractFirstLine(command: string | undefined): string | undefined {
+  if (!command) return undefined;
+  return command.split('\n')[0].trim();
 }
 
 /**

@@ -174,6 +174,11 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((val) => val.toLowerCase() === 'true'),
+  // Terminal UI verbose: show full commands/paths without truncation and longer session previews
+  TERMINAL_UI_VERBOSE: z
+    .string()
+    .default('false')
+    .transform((val) => val.toLowerCase() === 'true'),
   ALLOW_PRIVATE_NETWORK_URLS: z
     .string()
     .default('false')
