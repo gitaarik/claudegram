@@ -14,8 +14,13 @@ import {
   getAvailableProviders,
   getAvailableModels,
   clearModel,
+  setEffort,
+  getEffort,
+  clearEffort,
+  isValidEffortLevel,
   type ProviderName,
   type ModelInfo,
+  type EffortLevel,
 } from '../../providers/provider-router.js';
 import { config, getReloadMarkerPath } from '../../config.js';
 import { messageSender } from '../../telegram/message-sender.js';
@@ -28,6 +33,7 @@ import {
   isProcessing,
   queueRequest,
   setAbortController,
+  getActiveQuery,
 } from '../../claude/request-queue.js';
 import { createTelegraphFromFile, createTelegraphPage } from '../../telegram/telegraph.js';
 import { isMediumUrl, fetchMediumArticle, FreediumArticle } from '../../medium/freedium.js';
@@ -3398,4 +3404,136 @@ export async function executeExtract(ctx: Context, url: string, mode: ExtractMod
       cleanupExtractResult(result);
     }
   }
+}
+
+// ── /btw ─────────────────────────────────────────────────────────
+
+export async function handleBtw(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { sessionKey } = keyInfo;
+
+  const text = ctx.message?.text || '';
+  const question = text.replace(/^\/btw\s*/i, '').trim();
+
+  if (!question) {
+    await ctx.reply('Usage: /btw <your question>\n\nAsk a side question without interrupting the current task.', { parse_mode: undefined });
+    return;
+  }
+
+  const activeQuery = getActiveQuery(sessionKey);
+  if (!activeQuery) {
+    await ctx.reply('No active session. Send your question as a regular message instead.', { parse_mode: undefined });
+    return;
+  }
+
+  // askSideQuestion exists at runtime but isn't in the TypeScript types yet
+  const queryAny = activeQuery as unknown as Record<string, unknown>;
+  if (typeof queryAny.askSideQuestion !== 'function') {
+    await ctx.reply('Side questions are not supported by the current SDK version.', { parse_mode: undefined });
+    return;
+  }
+
+  try {
+    const result = await (queryAny.askSideQuestion as (q: string) => Promise<{ response: string; synthetic: boolean } | null>)(question);
+    if (!result || !result.response) {
+      await ctx.reply("I don't have enough context to answer that.", { parse_mode: undefined });
+      return;
+    }
+    await messageSender.sendMessage(ctx, `${result.response}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[btw] Error:', msg);
+    await ctx.reply(`Failed to answer side question: ${msg}`, { parse_mode: undefined });
+  }
+}
+
+// ── /effort ──────────────────────────────────────────────────────
+
+const EFFORT_LEVELS: { id: EffortLevel; label: string; description: string }[] = [
+  { id: 'low', label: '🐇 Low', description: 'Minimal thinking, fastest' },
+  { id: 'medium', label: '⚖️ Medium', description: 'Balanced speed/quality' },
+  { id: 'high', label: '🧠 High', description: 'Deep reasoning (default)' },
+  { id: 'xhigh', label: '🔬 XHigh', description: 'Extra deep (Opus 4.7)' },
+  { id: 'max', label: '🚀 Max', description: 'Maximum effort' },
+];
+
+export async function handleEffort(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { chatId } = keyInfo;
+
+  const text = ctx.message?.text || '';
+  const args = text.split(' ').slice(1).join(' ').trim().toLowerCase();
+
+  if (!args) {
+    const currentEffort = getEffort(chatId) || 'default';
+
+    const keyboard = EFFORT_LEVELS.map((level) => {
+      const isCurrent = level.id === currentEffort;
+      const label = isCurrent ? `✓ ${level.label}` : level.label;
+      return [{ text: label, callback_data: `effort:${level.id}` }];
+    });
+    // Add auto/reset option
+    keyboard.push([{ text: currentEffort === 'default' ? '✓ Auto (default)' : 'Auto (default)', callback_data: 'effort:auto' }]);
+
+    const descriptions = EFFORT_LEVELS
+      .map(l => `• *${esc(l.label)}* \\- ${esc(l.description)}`)
+      .join('\n');
+
+    await ctx.reply(
+      `🎯 *Effort Level*\n\n_Current: ${esc(currentEffort)}_\n\n${descriptions}\n• *Auto* \\- SDK default`,
+      {
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: keyboard },
+      }
+    );
+    return;
+  }
+
+  if (args === 'auto' || args === 'default' || args === 'reset') {
+    clearEffort(chatId);
+    await replyMd(ctx, '✅ Effort reset to *auto* \\(SDK default\\)');
+    return;
+  }
+
+  if (!isValidEffortLevel(args)) {
+    await replyMd(ctx, `❌ Unknown effort level "${esc(args)}"\\.\n\nValid: low, medium, high, xhigh, max, auto`);
+    return;
+  }
+
+  setEffort(chatId, args);
+  const info = EFFORT_LEVELS.find(l => l.id === args);
+  await replyMd(ctx, `✅ Effort set to *${esc(info?.label || args)}*`);
+}
+
+export async function handleEffortCallback(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) return;
+  const { chatId } = keyInfo;
+
+  const data = ctx.callbackQuery?.data;
+  if (!data || !data.startsWith('effort:')) return;
+
+  const level = data.replace('effort:', '');
+
+  if (level === 'auto') {
+    clearEffort(chatId);
+    await ctx.answerCallbackQuery({ text: 'Effort reset to auto!' });
+    await ctx.editMessageText('✅ Effort reset to *auto* \\(SDK default\\)', { parse_mode: 'MarkdownV2' });
+    return;
+  }
+
+  if (!isValidEffortLevel(level)) {
+    await ctx.answerCallbackQuery({ text: 'Invalid effort level' });
+    return;
+  }
+
+  setEffort(chatId, level);
+
+  const info = EFFORT_LEVELS.find(l => l.id === level);
+  const displayName = info?.label || level;
+
+  await ctx.answerCallbackQuery({ text: `Effort set to ${displayName}!` });
+  await ctx.editMessageText(`✅ Effort set to *${esc(displayName)}*`, { parse_mode: 'MarkdownV2' });
 }

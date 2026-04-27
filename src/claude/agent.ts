@@ -29,6 +29,7 @@ import {
 } from '../utils/agent-timer.js';
 import { userPreferences } from '../providers/user-preferences.js';
 import { BoundedMap } from '../utils/bounded-map.js';
+import { parseSessionKey } from '../utils/session-key.js';
 
 import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions, ImageAttachment } from '../providers/types.js';
 export type { AgentUsage };
@@ -46,6 +47,9 @@ const chatSessionIds = new BoundedMap<string, string>(1000);
 // Track current model per session (default: opus)
 // chatModels is intentionally unbounded — it's backed by persistent preferences
 const chatModels = new Map<string, string>();
+
+// Track effort level per user (default: undefined = SDK default)
+const chatEffort = new Map<string, string>();
 
 // Cache latest usage per session for /context and /status commands
 const chatUsageCache = new BoundedMap<string, AgentUsage>(1000);
@@ -379,6 +383,10 @@ export async function sendToAgent(
   // Determine model to use (default to 'opus' to match getModel() default)
   const effectiveModel = model || chatModels.get(sessionKey) || 'opus';
 
+  // Determine effort level (undefined = SDK default)
+  const { chatId: parsedChatId } = parseSessionKey(sessionKey);
+  const effectiveEffort = getEffort(parsedChatId);
+
   // Initialize timer for tracking query duration (watchdog created inside try with controller)
   const timer = createAgentTimer();
   let watchdog: AgentWatchdog | null = null;
@@ -511,6 +519,7 @@ export async function sendToAgent(
       },
       settingSources: ['project', 'user'] as SettingSource[],
       model: effectiveModel,
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       resume: existingSessionId,
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(config.CLAUDE_USE_BUNDLED_EXECUTABLE ? {} : { pathToClaudeCodeExecutable: config.CLAUDE_EXECUTABLE_PATH }),
@@ -930,6 +939,35 @@ export function getModel(chatId: number): string {
 export function clearModel(chatId: number): void {
   chatModels.delete(String(chatId));
   userPreferences.clearModel(chatId);
+}
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+const VALID_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+export function setEffort(chatId: number, effort: EffortLevel): void {
+  chatEffort.set(String(chatId), effort);
+  userPreferences.setEffort(chatId, effort);
+}
+
+export function getEffort(chatId: number): EffortLevel | undefined {
+  let effort = chatEffort.get(String(chatId));
+  if (!effort) {
+    effort = userPreferences.getEffort(chatId);
+    if (effort) {
+      chatEffort.set(String(chatId), effort);
+    }
+  }
+  return effort as EffortLevel | undefined;
+}
+
+export function clearEffort(chatId: number): void {
+  chatEffort.delete(String(chatId));
+  userPreferences.clearEffort(chatId);
+}
+
+export function isValidEffortLevel(level: string): level is EffortLevel {
+  return VALID_EFFORT_LEVELS.includes(level as EffortLevel);
 }
 
 export function isDangerousMode(): boolean {

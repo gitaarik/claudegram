@@ -1,5 +1,12 @@
 import { config } from '../config.js';
 import { claudeProvider } from './claude-provider.js';
+import {
+  setEffort as claudeSetEffort,
+  getEffort as claudeGetEffort,
+  clearEffort as claudeClearEffort,
+  isValidEffortLevel,
+  type EffortLevel,
+} from '../claude/agent.js';
 import { userPreferences } from './user-preferences.js';
 import { parseSessionKey } from '../utils/session-key.js';
 import type { Provider, ProviderName, AgentOptions, LoopOptions, AgentResponse, AgentUsage, ModelInfo } from './types.js';
@@ -126,6 +133,22 @@ export function getCachedUsage(sessionKey: string): AgentUsage | undefined {
 export function isDangerousMode(): boolean {
   // Dangerous mode is a Claude-specific concept; always check Claude provider
   return claudeProvider.isDangerousMode();
+}
+
+// Effort is Claude-specific; re-export directly from agent.ts
+export { isValidEffortLevel };
+export type { EffortLevel };
+
+export function setEffort(chatId: number, effort: EffortLevel): void {
+  claudeSetEffort(chatId, effort);
+}
+
+export function getEffort(chatId: number): EffortLevel | undefined {
+  return claudeGetEffort(chatId);
+}
+
+export function clearEffort(chatId: number): void {
+  claudeClearEffort(chatId);
 }
 
 export async function getAvailableModels(chatId: number): Promise<ModelInfo[]> {

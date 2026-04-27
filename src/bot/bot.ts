@@ -57,6 +57,9 @@ import {
   handleBotNameCallback,
   handleTopic,
   handleRebuild,
+  handleBtw,
+  handleEffort,
+  handleEffortCallback,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -135,6 +138,8 @@ export async function createBot(): Promise<Bot> {
     { command: 'file', description: '📎 Download a file from project' },
     { command: 'telegraph', description: '📄 View markdown with Instant View' },
     { command: 'model', description: '🤖 Switch AI model' },
+    { command: 'effort', description: '🎯 Set reasoning effort level' },
+    { command: 'btw', description: '💬 Side question without interrupting' },
     ...(config.OPENCODE_ENABLED ? [{ command: 'provider', description: '🔌 Switch AI provider' }] : []),
     { command: 'mode', description: '⚙️ Toggle streaming mode' },
     { command: 'terminalui', description: '🖥️ Toggle terminal-style display' },
@@ -162,6 +167,7 @@ export async function createBot(): Promise<Bot> {
   bot.command('status', handleStatus);
   bot.command('restartbot', handleRestartBot);
   bot.command('rebuild', handleRebuild);
+  bot.command('btw', handleBtw); // Side question — must bypass queue to work mid-task
 
   // Batch consecutive text messages BEFORE sequentialize.
   // When Telegram splits a long paste into multiple messages, this combines
@@ -188,6 +194,7 @@ export async function createBot(): Promise<Bot> {
 
   bot.command('commands', handleCommands);
   bot.command('model', handleModelCommand);
+  bot.command('effort', handleEffort);
   if (config.OPENCODE_ENABLED) {
     bot.command('provider', handleProviderCommand);
   }
@@ -264,6 +271,8 @@ export async function createBot(): Promise<Bot> {
       await handleRestartCallback(ctx);
     } else if (data.startsWith('reset:')) {
       await handleResetCallback(ctx);
+    } else if (data.startsWith('effort:')) {
+      await handleEffortCallback(ctx);
     }
   });
 
