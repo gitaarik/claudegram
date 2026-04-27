@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { z } from 'zod';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { config } from '../config.js';
 
 // Zod schema for session history entry
 const sessionHistoryEntrySchema = z.object({
@@ -102,7 +103,7 @@ class SessionHistory {
       claudeSessionId: claudeSessionId ?? existingEntry?.claudeSessionId,
       projectPath,
       projectName,
-      lastMessagePreview: lastMessagePreview.substring(0, 100),
+      lastMessagePreview: lastMessagePreview.substring(0, config.TERMINAL_UI_VERBOSE ? 1000 : 100),
       createdAt:
         existingIndex >= 0
           ? history[existingIndex].createdAt
@@ -160,7 +161,7 @@ class SessionHistory {
 
     const entry = history.find((e) => e.conversationId === conversationId);
     if (entry) {
-      entry.lastMessagePreview = preview.substring(0, 100);
+      entry.lastMessagePreview = preview.substring(0, config.TERMINAL_UI_VERBOSE ? 1000 : 100);
       entry.lastActivity = new Date().toISOString();
       this.save();
     }
