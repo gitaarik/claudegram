@@ -33,6 +33,7 @@ interface StreamState {
   spinnerIndex: number;
   spinnerInterval: NodeJS.Timeout | null;
   currentOperation: ToolOperation | null;
+  operationStartTime: number;
   backgroundTasks: Array<{ name: string; status: 'running' | 'complete' | 'error' }>;
   rateLimitedUntil: number;
 }
@@ -176,13 +177,14 @@ export class MessageSender {
     // Start continuous typing indicator
     const typingInterval = this.startTypingIndicator(ctx.api, chatId, threadId);
 
+    const now = Date.now();
     const state: StreamState = {
       chatId,
       threadId,
       sessionKey,
       messageId: message.message_id,
       content: '',
-      lastUpdate: Date.now(),
+      lastUpdate: now,
       updateScheduled: false,
       typingInterval,
       // Terminal UI mode
@@ -190,9 +192,20 @@ export class MessageSender {
       spinnerIndex: 0,
       spinnerInterval: null,
       currentOperation: null,
+      operationStartTime: now,
       backgroundTasks: [],
       rateLimitedUntil: 0,
     };
+
+    // Periodic refresh so the elapsed timer and spinner update even during long tool runs
+    if (terminalMode) {
+      state.spinnerInterval = setInterval(() => {
+        state.spinnerIndex += 1;
+        if (ctx) {
+          this.flushTerminalUpdate(ctx, state).catch(() => {});
+        }
+      }, MIN_EDIT_INTERVAL_MS);
+    }
 
     this.streamStates.set(sessionKey, state);
   }
@@ -236,6 +249,7 @@ export class MessageSender {
 
     const detail = input ? extractToolDetail(toolName, input) : undefined;
     state.currentOperation = { name: toolName, detail };
+    state.operationStartTime = Date.now();
     state.spinnerIndex += 1;
 
     if (ctx) {
@@ -293,7 +307,8 @@ export class MessageSender {
       const icon = getToolIcon(state.currentOperation.name);
       const action = this.getToolAction(state.currentOperation.name);
       const detail = state.currentOperation.detail ? ` ${state.currentOperation.detail}` : '';
-      parts.push(renderStatusLine(state.spinnerIndex, icon, action, detail ? detail.trim() : undefined));
+      const elapsedMs = now - state.operationStartTime;
+      parts.push(renderStatusLine(state.spinnerIndex, icon, action, detail ? detail.trim() : undefined, elapsedMs));
     }
 
     // Add background tasks (cap display to prevent exceeding Telegram's 4096-char limit)
