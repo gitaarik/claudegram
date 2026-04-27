@@ -3,6 +3,8 @@
  * Provides emoji icons, spinners, and progress indicators for a terminal-like experience.
  */
 
+import { formatDuration } from '../utils/agent-timer.js';
+
 // Tool icons (emoji-based for mobile friendliness)
 export const TOOL_ICONS: Record<string, string> = {
   // File operations
@@ -62,17 +64,21 @@ export function getSpinnerFrame(index: number): string {
 
 /**
  * Render a status line showing current operation
- * Example: "⠹ 📖 Reading src/config.ts..."
+ * Example: "⠹ 📖 Reading src/config.ts... [1m 12s]"
  */
 export function renderStatusLine(
   spinnerIndex: number,
   icon: string,
   operation: string,
-  detail?: string
+  detail?: string,
+  elapsedMs?: number
 ): string {
   const spinner = getSpinnerFrame(spinnerIndex);
   const detailStr = detail ? ` ${detail}` : '';
-  return `${spinner} ${icon} ${operation}${detailStr}`;
+  const timerStr = elapsedMs !== undefined && elapsedMs >= 5000
+    ? ` [${formatDuration(elapsedMs)}]`
+    : '';
+  return `${spinner} ${icon} ${operation}${detailStr}${timerStr}`;
 }
 
 /**
