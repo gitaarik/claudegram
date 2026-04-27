@@ -31,6 +31,10 @@ export function setActiveQuery(sessionKey: string, q: Query): void {
   activeQueries.set(sessionKey, q);
 }
 
+export function getActiveQuery(sessionKey: string): Query | undefined {
+  return activeQueries.get(sessionKey);
+}
+
 export function clearActiveQuery(sessionKey: string): void {
   activeQueries.delete(sessionKey);
 }

@@ -8,6 +8,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 const userPreferencesSchema = z.object({
   provider: z.enum(['claude', 'opencode']).optional(),
   model: z.string().optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   lastUpdated: z.string(),
 });
 
@@ -93,6 +94,27 @@ class UserPreferencesManager {
   clearModel(chatId: number): void {
     if (this.data[chatId]) {
       delete this.data[chatId].model;
+      this.data[chatId].lastUpdated = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  getEffort(chatId: number): string | undefined {
+    return this.data[chatId]?.effort;
+  }
+
+  setEffort(chatId: number, effort: string): void {
+    if (!this.data[chatId]) {
+      this.data[chatId] = { lastUpdated: new Date().toISOString() };
+    }
+    this.data[chatId].effort = effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    this.data[chatId].lastUpdated = new Date().toISOString();
+    this.save();
+  }
+
+  clearEffort(chatId: number): void {
+    if (this.data[chatId]) {
+      delete this.data[chatId].effort;
       this.data[chatId].lastUpdated = new Date().toISOString();
       this.save();
     }
