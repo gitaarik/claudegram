@@ -32,6 +32,9 @@ interface SessionHistoryData {
 const HISTORY_DIR = path.join(os.homedir(), '.claudegram');
 const DEFAULT_HISTORY_FILE = path.join(HISTORY_DIR, 'sessions.json');
 const MAX_HISTORY_PER_CHAT = 20;
+// Cap stored assistant preview at 50KB so multi-chunk responses survive a
+// reload intact (Telegram allows 4096 chars/message — the restore flow chunks).
+const MAX_ASSISTANT_PREVIEW_CHARS = 50_000;
 
 class SessionHistory {
   private data: SessionHistoryData = { sessions: {} };
@@ -204,7 +207,7 @@ class SessionHistory {
 
     const entry = history.find((e) => e.conversationId === conversationId);
     if (entry) {
-      entry.lastAssistantPreview = preview.substring(0, config.TERMINAL_UI_VERBOSE ? 1000 : 200);
+      entry.lastAssistantPreview = preview.substring(0, MAX_ASSISTANT_PREVIEW_CHARS);
       entry.lastActivity = new Date().toISOString();
       this.save();
     }

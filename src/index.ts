@@ -12,6 +12,7 @@ import { clearConversation } from './providers/provider-router.js';
 import { parseSessionKey } from './utils/session-key.js';
 import { setSessionTopic } from './bot/handlers/command.handler.js';
 import { isBotNameEnabled, rateLimitedSetMyName } from './telegram/botname-settings.js';
+import { splitMessage } from './telegram/markdown.js';
 import type { Bot } from 'grammy';
 
 // When running as a worker thread (multi-instance mode), prefix all console
@@ -157,9 +158,14 @@ async function autoResumeAfterReload(bot: Bot): Promise<void> {
       if (entry.lastAssistantPreview) {
         msg += `\n\n💬 Last response:\n${entry.lastAssistantPreview}`;
       }
-      await bot.api.sendMessage(chatId, msg, {
-        ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
-      });
+      // The last response can span multiple Telegram messages — chunk so
+      // it survives the 4096-char per-message limit instead of getting cut off.
+      const chunks = splitMessage(msg);
+      for (const chunk of chunks) {
+        await bot.api.sendMessage(chatId, chunk, {
+          ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+        });
+      }
       resumed++;
     } catch (err) {
       console.error(`[AutoResume] Failed to resume ${sessionKey}:`, err);
