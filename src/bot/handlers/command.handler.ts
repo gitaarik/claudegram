@@ -66,6 +66,7 @@ import { isMainThread } from 'worker_threads';
 import { sanitizeError, sanitizePath } from '../../utils/sanitize.js';
 import { getWorkspaceRoot, isPathWithinRoot } from '../../utils/workspace-guard.js';
 import { getSessionKeyFromCtx, parseSessionKey } from '../../utils/session-key.js';
+import { taskTracker, type TaskState } from '../../telegram/task-tracker.js';
 
 // Helper for consistent MarkdownV2 replies
 async function replyMd(ctx: Context, text: string): Promise<void> {
@@ -3536,4 +3537,236 @@ export async function handleEffortCallback(ctx: Context): Promise<void> {
 
   await ctx.answerCallbackQuery({ text: `Effort set to ${displayName}!` });
   await ctx.editMessageText(`✅ Effort set to *${esc(displayName)}*`, { parse_mode: 'MarkdownV2' });
+}
+
+// ---------------------------------------------------------------------------
+// /tasks — list and inspect SDK background tasks
+// ---------------------------------------------------------------------------
+
+interface TaskGroup {
+  emoji: string;
+  label: string;
+  tasks: TaskState[];
+}
+
+function groupTasksForDisplay(tasks: TaskState[]): TaskGroup[] {
+  const monitors: TaskState[] = [];
+  const shells: TaskState[] = [];
+  const agents: TaskState[] = [];
+  const workflows: TaskState[] = [];
+  const other: TaskState[] = [];
+
+  for (const task of tasks) {
+    switch (task.taskType) {
+      case 'monitor_mcp': monitors.push(task); break;
+      case 'local_bash': shells.push(task); break;
+      case 'local_workflow': workflows.push(task); break;
+      case 'local_agent':
+      case 'remote_agent':
+      case undefined:
+        agents.push(task);
+        break;
+      default:
+        other.push(task);
+    }
+  }
+
+  const groups: TaskGroup[] = [];
+  if (agents.length) groups.push({ emoji: '🤖', label: 'Agents', tasks: agents });
+  if (monitors.length) groups.push({ emoji: '📡', label: 'Monitors', tasks: monitors });
+  if (shells.length) groups.push({ emoji: '💻', label: 'Shells', tasks: shells });
+  if (workflows.length) groups.push({ emoji: '📋', label: 'Workflows', tasks: workflows });
+  if (other.length) groups.push({ emoji: '🔹', label: 'Other', tasks: other });
+  return groups;
+}
+
+function formatTaskElapsed(task: TaskState): string {
+  const elapsedMs = (task.endedAt ?? Date.now()) - task.startedAt;
+  const seconds = Math.floor(elapsedMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
+function getActiveTasks(sessionKey: string): TaskState[] {
+  return taskTracker.getTasks(sessionKey).filter(t =>
+    t.status === 'running' || t.status === 'pending'
+  );
+}
+
+function renderTasksList(tasks: TaskState[]): { text: string; keyboard: { text: string; callback_data: string }[][] } {
+  if (tasks.length === 0) {
+    return {
+      text: '🔄 *Active background tasks*\n\nNone running\\.',
+      keyboard: [[{ text: '🔄 Refresh', callback_data: 'tasks:refresh' }]],
+    };
+  }
+
+  const groups = groupTasksForDisplay(tasks);
+  const lines: string[] = [`🔄 *Active background tasks* \\(${tasks.length}\\)`, ''];
+
+  // Number tasks globally so callback buttons match the listed indices.
+  let index = 1;
+  const numberedTasks: TaskState[] = [];
+
+  for (const group of groups) {
+    lines.push(`${group.emoji} *${esc(group.label)}* \\(${group.tasks.length}\\)`);
+    for (const task of group.tasks) {
+      const desc = task.description.length > 70
+        ? task.description.substring(0, 67) + '...'
+        : task.description;
+      lines.push(`  ${index}\\. ${esc(desc)} · ${esc(formatTaskElapsed(task))}`);
+      numberedTasks.push(task);
+      index++;
+    }
+    lines.push('');
+  }
+  lines.push('_Tap a number to view details\\._');
+
+  const keyboard: { text: string; callback_data: string }[][] = [];
+  // Telegram inline keyboards render best at 5 buttons per row for short labels.
+  const numberRow: { text: string; callback_data: string }[] = [];
+  numberedTasks.forEach((task, i) => {
+    numberRow.push({ text: String(i + 1), callback_data: `tasks:view:${task.id}` });
+    if (numberRow.length === 5 || i === numberedTasks.length - 1) {
+      keyboard.push([...numberRow]);
+      numberRow.length = 0;
+    }
+  });
+  keyboard.push([{ text: '🔄 Refresh', callback_data: 'tasks:refresh' }]);
+
+  return { text: lines.join('\n'), keyboard };
+}
+
+function renderTaskDetail(task: TaskState): { text: string; keyboard: { text: string; callback_data: string }[][] } {
+  const groupHint = (() => {
+    switch (task.taskType) {
+      case 'monitor_mcp': return '📡 Monitor';
+      case 'local_bash': return '💻 Shell';
+      case 'local_workflow': return '📋 Workflow';
+      case 'local_agent':
+      case 'remote_agent':
+      case undefined: return '🤖 Agent';
+      default: return '🔹 Task';
+    }
+  })();
+
+  const lines: string[] = [
+    `${groupHint}: *${esc(task.description)}*`,
+    '',
+    `• *Status:* ${esc(task.status)}`,
+    `• *Backgrounded:* ${task.isBackgrounded ? 'yes' : 'no'}`,
+    `• *Started:* ${esc(formatTaskElapsed(task))} ago`,
+  ];
+  if (task.taskType) {
+    lines.push(`• *Type:* \`${esc(task.taskType)}\``);
+  }
+  if (task.lastProgress?.lastToolName) {
+    lines.push(`• *Last tool:* \`${esc(task.lastProgress.lastToolName)}\``);
+  }
+  if (task.lastProgress?.usage) {
+    const u = task.lastProgress.usage;
+    lines.push(`• *Tokens:* ${esc(String(u.totalTokens))} · *Tool uses:* ${esc(String(u.toolUses))}`);
+  }
+  if (task.lastProgress?.summary) {
+    const summary = task.lastProgress.summary.length > 300
+      ? task.lastProgress.summary.substring(0, 297) + '...'
+      : task.lastProgress.summary;
+    lines.push('');
+    lines.push('*Latest progress:*');
+    lines.push(`> ${esc(summary)}`);
+  }
+  if (task.error) {
+    lines.push('');
+    lines.push(`⚠️ ${esc(task.error)}`);
+  }
+
+  return {
+    text: lines.join('\n'),
+    keyboard: [
+      [
+        { text: '← Back to list', callback_data: 'tasks:back' },
+        { text: '🔄 Refresh', callback_data: `tasks:view:${task.id}` },
+      ],
+    ],
+  };
+}
+
+export async function handleTasks(ctx: Context): Promise<void> {
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!keyInfo) {
+    await ctx.reply('❌ Could not determine chat context for /tasks.');
+    return;
+  }
+
+  const tasks = getActiveTasks(keyInfo.sessionKey);
+  const { text, keyboard } = renderTasksList(tasks);
+
+  await ctx.reply(text, {
+    parse_mode: 'MarkdownV2',
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+export async function handleTasksCallback(ctx: Context): Promise<void> {
+  const data = ctx.callbackQuery?.data;
+  const keyInfo = getSessionKeyFromCtx(ctx);
+  if (!data || !keyInfo) {
+    await ctx.answerCallbackQuery().catch(() => {});
+    return;
+  }
+  const { sessionKey } = keyInfo;
+
+  if (data === 'tasks:refresh' || data === 'tasks:back') {
+    const tasks = getActiveTasks(sessionKey);
+    const { text, keyboard } = renderTasksList(tasks);
+    await ctx.answerCallbackQuery().catch(() => {});
+    try {
+      await ctx.editMessageText(text, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: keyboard },
+      });
+    } catch (err) {
+      // "message is not modified" is fine — content already up to date.
+      const msg = err instanceof Error ? err.message.toLowerCase() : '';
+      if (!msg.includes('message is not modified')) {
+        console.error('[Tasks] Failed to refresh list:', err);
+      }
+    }
+    return;
+  }
+
+  if (data.startsWith('tasks:view:')) {
+    const taskId = data.substring('tasks:view:'.length);
+    const task = taskTracker.getTask(sessionKey, taskId);
+    if (!task) {
+      // Task finished or was cleared between renders — go back to the list.
+      const tasks = getActiveTasks(sessionKey);
+      const { text, keyboard } = renderTasksList(tasks);
+      await ctx.answerCallbackQuery({ text: 'Task no longer active.' }).catch(() => {});
+      try {
+        await ctx.editMessageText(text, {
+          parse_mode: 'MarkdownV2',
+          reply_markup: { inline_keyboard: keyboard },
+        });
+      } catch { /* ignore */ }
+      return;
+    }
+    const { text, keyboard } = renderTaskDetail(task);
+    await ctx.answerCallbackQuery().catch(() => {});
+    try {
+      await ctx.editMessageText(text, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: keyboard },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.toLowerCase() : '';
+      if (!msg.includes('message is not modified')) {
+        console.error('[Tasks] Failed to render detail:', err);
+      }
+    }
+    return;
+  }
+
+  await ctx.answerCallbackQuery().catch(() => {});
 }

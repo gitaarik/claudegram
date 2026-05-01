@@ -60,6 +60,8 @@ import {
   handleBtw,
   handleEffort,
   handleEffortCallback,
+  handleTasks,
+  handleTasksCallback,
 } from './handlers/command.handler.js';
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
@@ -140,6 +142,7 @@ export async function createBot(): Promise<Bot> {
     { command: 'model', description: '🤖 Switch AI model' },
     { command: 'effort', description: '🎯 Set reasoning effort level' },
     { command: 'btw', description: '💬 Side question without interrupting' },
+    { command: 'tasks', description: '🔄 List active background tasks' },
     ...(config.OPENCODE_ENABLED ? [{ command: 'provider', description: '🔌 Switch AI provider' }] : []),
     { command: 'mode', description: '⚙️ Toggle streaming mode' },
     { command: 'terminalui', description: '🖥️ Toggle terminal-style display' },
@@ -168,6 +171,10 @@ export async function createBot(): Promise<Bot> {
   bot.command('restartbot', handleRestartBot);
   bot.command('rebuild', handleRebuild);
   bot.command('btw', handleBtw); // Side question — must bypass queue to work mid-task
+  bot.command('tasks', handleTasks); // Read-only; must bypass queue so it works mid-stream
+  // /tasks inline-keyboard buttons (view/back/refresh) also need to bypass
+  // sequentialize so they're responsive while a stream is active.
+  bot.callbackQuery(/^tasks:/, handleTasksCallback);
 
   // Batch consecutive text messages BEFORE sequentialize.
   // When Telegram splits a long paste into multiple messages, this combines
@@ -274,6 +281,8 @@ export async function createBot(): Promise<Bot> {
     } else if (data.startsWith('effort:')) {
       await handleEffortCallback(ctx);
     }
+    // Note: `tasks:` callback queries are handled by the pre-sequentialize
+    // bot.callbackQuery handler above so they remain responsive mid-stream.
   });
 
   // Handle voice messages
