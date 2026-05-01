@@ -7,9 +7,12 @@ import {
   getSpinnerFrame,
   getToolIcon,
   renderStatusLine,
+  renderBackgroundFooter,
   extractToolDetail,
   TOOL_ICONS,
 } from './terminal-renderer.js';
+import { taskTracker, type TaskState } from './task-tracker.js';
+import type { TaskEvent } from '../providers/types.js';
 import { getSessionKeyFromCtx } from '../utils/session-key.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -34,8 +37,8 @@ interface StreamState {
   spinnerInterval: NodeJS.Timeout | null;
   currentOperation: ToolOperation | null;
   operationStartTime: number;
-  backgroundTasks: Array<{ name: string; status: 'running' | 'complete' | 'error' }>;
   rateLimitedUntil: number;
+  lastRateLimitDurationMs: number;
 }
 
 const TYPING_INTERVAL_MS = 4000; // Send typing every 4 seconds
@@ -43,6 +46,10 @@ const MIN_EDIT_INTERVAL_MS = 10000; // Minimum time between message edits (~5 ed
 
 export class MessageSender {
   private streamStates: Map<string, StreamState> = new Map();
+  // Per-stream counter of task-completion messages posted. When > 0, the
+  // generic long-task `✅ Done` notification is suppressed to avoid pinging
+  // the user twice for the same long task. Reset on startStreaming.
+  private taskCompletionsPostedThisStream: Map<string, number> = new Map();
 
   /**
    * Send a message with hybrid approach:
@@ -193,8 +200,8 @@ export class MessageSender {
       spinnerInterval: null,
       currentOperation: null,
       operationStartTime: now,
-      backgroundTasks: [],
       rateLimitedUntil: 0,
+      lastRateLimitDurationMs: 0,
     };
 
     // Periodic refresh so the elapsed timer and spinner update even during long tool runs
@@ -208,6 +215,7 @@ export class MessageSender {
     }
 
     this.streamStates.set(sessionKey, state);
+    this.taskCompletionsPostedThisStream.set(sessionKey, 0);
   }
 
   private stopSpinnerAnimation(state: StreamState): void {
@@ -267,17 +275,73 @@ export class MessageSender {
   }
 
   /**
-   * Add or update a background task status (terminal UI mode)
+   * Apply an SDK task lifecycle event. Updates the per-session task tracker,
+   * posts a chat-level completion message on backgrounded `task_notification`
+   * events, and refreshes the streaming UI footer.
    */
-  updateBackgroundTask(sessionKey: string, taskName: string, status: 'running' | 'complete' | 'error'): void {
-    const state = this.streamStates.get(sessionKey);
-    if (!state || !state.terminalMode) return;
+  async notifyTaskEvent(ctx: Context, sessionKey: string, event: TaskEvent): Promise<void> {
+    const state = taskTracker.handleEvent(sessionKey, event);
 
-    const existing = state.backgroundTasks.find(t => t.name === taskName);
-    if (existing) {
-      existing.status = status;
-    } else {
-      state.backgroundTasks.push({ name: taskName, status });
+    if (event.type === 'notification' && state) {
+      await this.postTaskCompletion(ctx, state);
+      taskTracker.remove(sessionKey, event.taskId);
+    }
+
+    const streamState = this.streamStates.get(sessionKey);
+    if (streamState && streamState.terminalMode) {
+      streamState.spinnerIndex += 1;
+      this.flushTerminalUpdate(ctx, streamState).catch(() => {});
+    }
+  }
+
+  private async postTaskCompletion(ctx: Context, task: TaskState): Promise<void> {
+    // Skip ambient/housekeeping tasks and foreground subagents — only
+    // backgrounded tasks deserve a separate notification message.
+    if (task.skipTranscript) return;
+    if (!task.isBackgrounded) return;
+
+    const statusIcon = task.status === 'completed'
+      ? '✅'
+      : task.status === 'stopped' ? '🛑' : '❌';
+    const verb = task.status === 'completed'
+      ? 'completed'
+      : task.status === 'stopped' ? 'stopped' : 'failed';
+
+    const elapsedMs = (task.endedAt ?? Date.now()) - task.startedAt;
+    const seconds = Math.round(elapsedMs / 1000);
+    const duration = seconds >= 60
+      ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+      : `${seconds}s`;
+
+    const description = task.description.length > 100
+      ? task.description.substring(0, 97) + '...'
+      : task.description;
+
+    // Single-line format matching Claude Code's TUI:
+    //   ✅ Background task "<description>" completed in 54s
+    const headline = `${statusIcon} Background task "${escapeMarkdownV2(description)}" ${verb} in ${escapeMarkdownV2(duration)}`;
+    const lines: string[] = [headline];
+    if (task.error) {
+      lines.push(`⚠️ ${escapeMarkdownV2(task.error)}`);
+    }
+
+    let posted = false;
+    try {
+      await ctx.reply(lines.join('\n'), { parse_mode: 'MarkdownV2' });
+      posted = true;
+    } catch (error) {
+      console.error('[Task] Failed to post completion message:', error instanceof Error ? error.message : error);
+      try {
+        await ctx.reply(`${statusIcon} Background task "${task.description}" ${verb} in ${duration}`);
+        posted = true;
+      } catch { /* ignore */ }
+    }
+    if (posted) {
+      const sessionKey = getSessionKeyFromCtx(ctx)?.sessionKey;
+      if (sessionKey) {
+        const prev = this.taskCompletionsPostedThisStream.get(sessionKey) ?? 0;
+        this.taskCompletionsPostedThisStream.set(sessionKey, prev + 1);
+      }
     }
   }
 
@@ -308,26 +372,21 @@ export class MessageSender {
       const action = this.getToolAction(state.currentOperation.name);
       const detail = state.currentOperation.detail ? ` ${state.currentOperation.detail}` : '';
       const elapsedMs = now - state.operationStartTime;
-      parts.push(renderStatusLine(state.spinnerIndex, icon, action, detail ? detail.trim() : undefined, elapsedMs));
-    }
-
-    // Add background tasks (cap display to prevent exceeding Telegram's 4096-char limit)
-    const activeTasks = state.backgroundTasks.filter(t => t.status !== 'complete' && t.status !== 'error');
-    const finishedTasks = state.backgroundTasks.filter(t => t.status === 'complete' || t.status === 'error');
-    const displayTasks = [...activeTasks, ...finishedTasks.slice(-3)].slice(0, 8);
-    if (displayTasks.length > 0) {
-      if (state.currentOperation) parts.push('');
-      for (const task of displayTasks) {
-        const statusIcon = task.status === 'complete' ? TOOL_ICONS.complete
-          : task.status === 'error' ? TOOL_ICONS.error
-          : getSpinnerFrame(state.spinnerIndex);
-        parts.push(`${TOOL_ICONS.Task} ${task.name} ${statusIcon}`);
-      }
+      const pausedMs = state.lastRateLimitDurationMs > 0 ? state.lastRateLimitDurationMs : undefined;
+      parts.push(renderStatusLine(state.spinnerIndex, icon, action, detail ? detail.trim() : undefined, elapsedMs, pausedMs));
     }
 
     // If nothing to show, show thinking indicator
     if (parts.length === 0) {
       parts.push(`${getSpinnerFrame(state.spinnerIndex)} ${TOOL_ICONS.thinking} Thinking...`);
+    }
+
+    // Append compact footer when SDK background tasks are running.
+    const backgroundedTasks = taskTracker.getBackgroundedTasks(state.sessionKey);
+    const footer = renderBackgroundFooter(backgroundedTasks);
+    if (footer) {
+      parts.push('');
+      parts.push(footer);
     }
 
     const displayContent = parts.join('\n');
@@ -340,10 +399,13 @@ export class MessageSender {
         { parse_mode: undefined }
       );
       state.lastUpdate = Date.now();
+      // Successful edit — clear any rate-limit annotation after it's been shown once
+      state.lastRateLimitDurationMs = 0;
     } catch (error: unknown) {
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters.retry_after ?? 60;
         state.rateLimitedUntil = Date.now() + retryAfter * 1000;
+        state.lastRateLimitDurationMs = retryAfter * 1000;
         console.warn(`[Terminal] Rate limited, backing off for ${retryAfter}s (session:${state.sessionKey})`);
         return;
       }
@@ -510,10 +572,20 @@ export class MessageSender {
    * Send a brief new message to trigger a push notification after a long task.
    * Telegram only notifies on new messages, not edits — so streaming mode
    * needs this to alert the user when a long task finishes.
+   *
+   * Suppressed when at least one backgrounded-task completion message was
+   * already posted during this stream — that message is itself a new chat
+   * message, which triggers a notification on its own.
    */
   async sendCompletionNotification(ctx: Context, elapsedMs: number): Promise<void> {
     if (!config.NOTIFICATION_ENABLED) return;
     if (elapsedMs < config.NOTIFICATION_THRESHOLD_SECONDS * 1000) return;
+
+    const sessionKey = getSessionKeyFromCtx(ctx)?.sessionKey;
+    if (sessionKey) {
+      const taskCompletions = this.taskCompletionsPostedThisStream.get(sessionKey) ?? 0;
+      if (taskCompletions > 0) return;
+    }
 
     try {
       const seconds = Math.round(elapsedMs / 1000);

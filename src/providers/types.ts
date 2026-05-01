@@ -26,10 +26,66 @@ export interface ImageAttachment {
   mediaType: string;
 }
 
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'stopped';
+
+export interface TaskUsage {
+  totalTokens: number;
+  toolUses: number;
+  durationMs: number;
+}
+
+export interface TaskStartedEvent {
+  type: 'started';
+  taskId: string;
+  description: string;
+  toolUseId?: string;
+  taskType?: string;
+  workflowName?: string;
+  skipTranscript?: boolean;
+  /**
+   * True when the launching tool input had `run_in_background: true`.
+   * Tasks born backgrounded never emit a task_updated patch for this field,
+   * so we have to derive it at task_started time.
+   */
+  isBackgrounded?: boolean;
+}
+
+export interface TaskProgressEvent {
+  type: 'progress';
+  taskId: string;
+  description: string;
+  lastToolName?: string;
+  summary?: string;
+  usage?: TaskUsage;
+}
+
+export interface TaskUpdatedEvent {
+  type: 'updated';
+  taskId: string;
+  status?: TaskStatus;
+  description?: string;
+  isBackgrounded?: boolean;
+  error?: string;
+  endTime?: number;
+}
+
+export interface TaskNotificationEvent {
+  type: 'notification';
+  taskId: string;
+  status: 'completed' | 'failed' | 'stopped';
+  outputFile: string;
+  summary: string;
+  usage?: TaskUsage;
+}
+
+export type TaskEvent = TaskStartedEvent | TaskProgressEvent | TaskUpdatedEvent | TaskNotificationEvent;
+
 export interface AgentOptions {
   onProgress?: (text: string) => void;
   onToolStart?: (toolName: string, input?: Record<string, unknown>) => void;
   onToolEnd?: () => void;
+  /** Lifecycle events for SDK background tasks (task_started/progress/updated/notification) */
+  onTaskEvent?: (event: TaskEvent) => void | Promise<void>;
   abortController?: AbortController;
   command?: string;
   model?: string;
