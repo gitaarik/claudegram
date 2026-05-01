@@ -461,6 +461,7 @@ async function handleAgentReply(
             onToolEnd: () => {
               messageSender.clearToolOperation(sessionKey);
             },
+            onTaskEvent: (event) => messageSender.notifyTaskEvent(ctx, sessionKey, event),
             abortController,
             command: mode,
             telegramCtx: ctx,
@@ -579,6 +580,7 @@ async function handleStreamingResponse(
       onToolEnd: () => {
         messageSender.clearToolOperation(sessionKey);
       },
+      onTaskEvent: (event) => messageSender.notifyTaskEvent(ctx, sessionKey, event),
       abortController,
       telegramCtx: ctx,
     });

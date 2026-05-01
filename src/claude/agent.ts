@@ -6,6 +6,10 @@ import {
   type SDKCompactBoundaryMessage,
   type SDKStatusMessage,
   type SDKSystemMessage,
+  type SDKTaskStartedMessage,
+  type SDKTaskProgressMessage,
+  type SDKTaskUpdatedMessage,
+  type SDKTaskNotificationMessage,
   type PermissionMode,
   type SettingSource,
   type HookEvent,
@@ -31,7 +35,8 @@ import { userPreferences } from '../providers/user-preferences.js';
 import { BoundedMap } from '../utils/bounded-map.js';
 import { parseSessionKey } from '../utils/session-key.js';
 
-import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions, ImageAttachment } from '../providers/types.js';
+import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions, ImageAttachment, TaskEvent } from '../providers/types.js';
+import { taskTracker } from '../telegram/task-tracker.js';
 export type { AgentUsage };
 
 interface ConversationMessage {
@@ -301,7 +306,15 @@ export async function sendToAgent(
   message: string,
   options: AgentOptions = {}
 ): Promise<AgentResponse> {
-  const { onProgress, onToolStart, onToolEnd, abortController, command, model, images } = options;
+  const { onProgress, onToolStart, onToolEnd, onTaskEvent, abortController, command, model, images } = options;
+
+  async function emitTaskEvent(event: TaskEvent): Promise<void> {
+    try {
+      await onTaskEvent?.(event);
+    } catch (err) {
+      console.error('[Claude] onTaskEvent handler threw:', err);
+    }
+  }
 
   const session = sessionManager.getSession(sessionKey);
 
@@ -518,6 +531,11 @@ export async function sendToAgent(
       : null;
     watchdog?.start();
 
+    // Track tool_use_ids that were launched with run_in_background:true,
+    // so the matching task_started event can be marked as backgrounded.
+    // (task_updated.is_backgrounded only fires on transitions, not initial state.)
+    const backgroundedToolUseIds = new Set<string>();
+
     // Process response messages
     for await (const responseMessage of response) {
       // Record activity for watchdog
@@ -551,14 +569,26 @@ export async function sendToAgent(
                   : '';
             logAt('verbose', `[Claude] [${formatDuration(getElapsedMs(timer))}] Tool: ${block.name}${inputSummary ? ` → ${inputSummary}` : ''}`);
             toolsUsed.push(block.name);
+            // Remember tool_use_ids launched as background tasks so we can
+            // stamp the matching task_started event with isBackgrounded:true.
+            const isBackgroundedToolCall = toolInput.run_in_background === true;
+            if (isBackgroundedToolCall && 'id' in block && typeof block.id === 'string') {
+              backgroundedToolUseIds.add(block.id);
+              logAt('verbose', `[Claude] BACKGROUND TASK LAUNCH: tool=${block.name} tool_use_id=${block.id}`);
+            }
             // Special logging for Task tool (subagents) - always log at basic level
             if (block.name === 'Task') {
               const taskDesc = toolInput.description || toolInput.prompt || 'unnamed task';
               const subagentType = toolInput.subagent_type || 'unknown';
               logAt('basic', `[Claude] SUBAGENT START: ${subagentType} — ${String(taskDesc).substring(0, 100)}`);
             }
-            // Notify tool start for terminal UI
-            onToolStart?.(block.name, toolInput);
+            // Notify tool start for terminal UI — but skip backgrounded
+            // tool calls. Their placeholder result returns immediately, so
+            // showing them as the active foreground operation is misleading.
+            // The streaming UI's footer represents them instead.
+            if (!isBackgroundedToolCall) {
+              onToolStart?.(block.name, toolInput);
+            }
           }
         }
       } else if (responseMessage.type === 'system') {
@@ -581,6 +611,62 @@ export async function sendToAgent(
           if (statusMsg.status === 'compacting') {
             logAt('basic', '[Claude] STATUS: compacting in progress');
           }
+        } else if (responseMessage.subtype === 'task_started') {
+          const m = responseMessage as SDKTaskStartedMessage;
+          const isBackgrounded = m.tool_use_id ? backgroundedToolUseIds.has(m.tool_use_id) : false;
+          logAt('verbose', `[Claude] TASK STARTED: ${m.task_id} — ${m.description} backgrounded=${isBackgrounded}`);
+          await emitTaskEvent({
+            type: 'started',
+            taskId: m.task_id,
+            description: m.description,
+            toolUseId: m.tool_use_id,
+            taskType: m.task_type,
+            workflowName: m.workflow_name,
+            skipTranscript: m.skip_transcript,
+            isBackgrounded,
+          });
+        } else if (responseMessage.subtype === 'task_progress') {
+          const m = responseMessage as SDKTaskProgressMessage;
+          logAt('trace', `[Claude] TASK PROGRESS: ${m.task_id} — ${m.last_tool_name ?? '?'}`);
+          await emitTaskEvent({
+            type: 'progress',
+            taskId: m.task_id,
+            description: m.description,
+            lastToolName: m.last_tool_name,
+            summary: m.summary,
+            usage: m.usage ? {
+              totalTokens: m.usage.total_tokens,
+              toolUses: m.usage.tool_uses,
+              durationMs: m.usage.duration_ms,
+            } : undefined,
+          });
+        } else if (responseMessage.subtype === 'task_updated') {
+          const m = responseMessage as SDKTaskUpdatedMessage;
+          logAt('verbose', `[Claude] TASK UPDATED: ${m.task_id} — status=${m.patch.status ?? '?'} backgrounded=${m.patch.is_backgrounded ?? '?'}`);
+          await emitTaskEvent({
+            type: 'updated',
+            taskId: m.task_id,
+            status: m.patch.status,
+            description: m.patch.description,
+            isBackgrounded: m.patch.is_backgrounded,
+            error: m.patch.error,
+            endTime: m.patch.end_time,
+          });
+        } else if (responseMessage.subtype === 'task_notification') {
+          const m = responseMessage as SDKTaskNotificationMessage;
+          logAt('basic', `[Claude] TASK NOTIFICATION: ${m.task_id} — ${m.status}`);
+          await emitTaskEvent({
+            type: 'notification',
+            taskId: m.task_id,
+            status: m.status,
+            outputFile: m.output_file,
+            summary: m.summary,
+            usage: m.usage ? {
+              totalTokens: m.usage.total_tokens,
+              toolUses: m.usage.tool_uses,
+              durationMs: m.usage.duration_ms,
+            } : undefined,
+          });
         } else {
           logAt('verbose', `[Claude] System: ${responseMessage.subtype ?? 'unknown'}`, responseMessage);
         }
@@ -792,6 +878,7 @@ export function clearConversation(sessionKey: string): void {
   conversationHistory.delete(sessionKey);
   chatSessionIds.delete(sessionKey);
   chatUsageCache.delete(sessionKey);
+  taskTracker.clear(sessionKey);
 }
 
 export function setModel(chatId: number, model: string): void {

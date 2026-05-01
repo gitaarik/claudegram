@@ -33,11 +33,9 @@ export const TOOL_ICONS: Record<string, string> = {
   info: 'ℹ️',
 };
 
-// Spinner frames for animation (Braille pattern spinner)
-export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-// Alternative spinner (dots)
-export const DOTS_SPINNER = ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'];
+// Spinner frames. Telegram throttles edits to ~5/min, so a fast-cycling braille
+// spinner just looks static. An hourglass is clearer at slow refresh rates.
+export const SPINNER_FRAMES = ['⏳'];
 
 // Progress bar characters
 export const PROGRESS = {
@@ -197,6 +195,22 @@ function truncateUrl(url: string | undefined, maxLen: number = 40): string | und
   if (!url) return undefined;
   if (url.length <= maxLen) return url;
   return url.substring(0, maxLen - 3) + '...';
+}
+
+/**
+ * Render a compact background-task footer for the streaming status block.
+ * - 0 tasks: empty string (caller can unconditionally append).
+ * - 1 task: "🔄 Running in background: <description>" (truncated).
+ * - N tasks: "🔄 N tasks running in background".
+ */
+export function renderBackgroundFooter(tasks: Array<{ description: string }>): string {
+  if (tasks.length === 0) return '';
+  if (tasks.length === 1) {
+    const desc = tasks[0].description;
+    const truncated = desc.length > 60 ? desc.substring(0, 57) + '...' : desc;
+    return `🔄 Running in background: ${truncated}`;
+  }
+  return `🔄 ${tasks.length} tasks running in background`;
 }
 
 /**
