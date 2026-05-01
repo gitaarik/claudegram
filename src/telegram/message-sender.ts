@@ -42,6 +42,7 @@ interface StreamState {
 
 const TYPING_INTERVAL_MS = 4000; // Send typing every 4 seconds
 const MIN_EDIT_INTERVAL_MS = 10000; // Minimum time between message edits (~5 edits/min safe zone)
+const MONITOR_TASK_TYPE = 'monitor_mcp';
 
 export class MessageSender {
   private streamStates: Map<string, StreamState> = new Map();
@@ -262,13 +263,20 @@ export class MessageSender {
 
   /**
    * Apply an SDK task lifecycle event. Updates the per-session task tracker,
-   * posts a chat-level completion message on backgrounded `task_notification`
-   * events, and refreshes the streaming UI footer.
+   * surfaces Monitor task events as their own chat messages, posts a
+   * chat-level completion message on backgrounded `task_notification` events,
+   * and refreshes the streaming UI footer.
    */
   async notifyTaskEvent(ctx: Context, sessionKey: string, event: TaskEvent): Promise<void> {
     const state = taskTracker.handleEvent(sessionKey, event);
+    const isMonitor = state?.taskType === MONITOR_TASK_TYPE;
 
-    if (event.type === 'notification' && state) {
+    if (event.type === 'started' && state && isMonitor) {
+      await this.postMonitorArmed(ctx, state);
+    } else if (event.type === 'progress' && state && isMonitor) {
+      const eventText = event.summary ?? event.description;
+      if (eventText) await this.postMonitorEvent(ctx, state, eventText);
+    } else if (event.type === 'notification' && state) {
       await this.postTaskCompletion(ctx, state);
       taskTracker.remove(sessionKey, event.taskId);
     }
@@ -280,17 +288,68 @@ export class MessageSender {
     }
   }
 
+  private async postMonitorArmed(ctx: Context, task: TaskState): Promise<void> {
+    if (task.skipTranscript) return;
+    const description = task.description.length > 100
+      ? task.description.substring(0, 97) + '...'
+      : task.description;
+    const text = `📡 Monitor "${escapeMarkdownV2(description)}" armed`;
+    try {
+      await ctx.reply(text, { parse_mode: 'MarkdownV2' });
+    } catch (error) {
+      console.error('[Task] Failed to post monitor armed:', error instanceof Error ? error.message : error);
+      try {
+        await ctx.reply(`📡 Monitor "${task.description}" armed`);
+      } catch { /* ignore */ }
+    }
+  }
+
+  private async postMonitorEvent(ctx: Context, task: TaskState, eventText: string): Promise<void> {
+    if (task.skipTranscript) return;
+    const truncated = eventText.length > 1000
+      ? eventText.substring(0, 997) + '...'
+      : eventText;
+    const text = `📡 Monitor event: ${escapeMarkdownV2(truncated)}`;
+    try {
+      await ctx.reply(text, { parse_mode: 'MarkdownV2' });
+    } catch (error) {
+      console.error('[Task] Failed to post monitor event:', error instanceof Error ? error.message : error);
+      try {
+        await ctx.reply(`📡 Monitor event: ${eventText.substring(0, 1000)}`);
+      } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Post the model's text response from an SDK-driven sub-turn (monitor
+   * event echoes, post-task_notification commentary) as its own Telegram
+   * message. Sent as plain text (no MarkdownV2 parsing — log lines often
+   * contain unescaped `_*[]`).
+   */
+  async postSubTurnResponse(ctx: Context, text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const truncated = trimmed.length > 3500 ? trimmed.substring(0, 3497) + '...' : trimmed;
+    try {
+      await ctx.reply(truncated, { parse_mode: undefined });
+    } catch (error) {
+      console.error('[Task] Failed to post sub-turn response:', error instanceof Error ? error.message : error);
+    }
+  }
+
   private async postTaskCompletion(ctx: Context, task: TaskState): Promise<void> {
     // Skip ambient/housekeeping tasks and foreground subagents — only
     // backgrounded tasks deserve a separate notification message.
     if (task.skipTranscript) return;
     if (!task.isBackgrounded) return;
 
+    const isMonitor = task.taskType === MONITOR_TASK_TYPE;
+
     const statusIcon = task.status === 'completed'
-      ? '✅'
+      ? (isMonitor ? '📡' : '✅')
       : task.status === 'stopped' ? '🛑' : '❌';
     const verb = task.status === 'completed'
-      ? 'completed'
+      ? (isMonitor ? 'stream ended' : 'completed')
       : task.status === 'stopped' ? 'stopped' : 'failed';
 
     const elapsedMs = (task.endedAt ?? Date.now()) - task.startedAt;
@@ -305,7 +364,10 @@ export class MessageSender {
 
     // Single-line format matching Claude Code's TUI:
     //   ✅ Background task "<description>" completed in 54s
-    const headline = `${statusIcon} Background task "${escapeMarkdownV2(description)}" ${verb} in ${escapeMarkdownV2(duration)}`;
+    //   📡 Monitor "<description>" stream ended after 12s
+    const headline = isMonitor
+      ? `${statusIcon} Monitor "${escapeMarkdownV2(description)}" ${escapeMarkdownV2(verb)} after ${escapeMarkdownV2(duration)}`
+      : `${statusIcon} Background task "${escapeMarkdownV2(description)}" ${verb} in ${escapeMarkdownV2(duration)}`;
     const lines: string[] = [headline];
     if (task.error) {
       lines.push(`⚠️ ${escapeMarkdownV2(task.error)}`);
@@ -318,7 +380,10 @@ export class MessageSender {
     } catch (error) {
       console.error('[Task] Failed to post completion message:', error instanceof Error ? error.message : error);
       try {
-        await ctx.reply(`${statusIcon} Background task "${task.description}" ${verb} in ${duration}`);
+        const fallback = isMonitor
+          ? `${statusIcon} Monitor "${task.description}" ${verb} after ${duration}`
+          : `${statusIcon} Background task "${task.description}" ${verb} in ${duration}`;
+        await ctx.reply(fallback);
         posted = true;
       } catch { /* ignore */ }
     }

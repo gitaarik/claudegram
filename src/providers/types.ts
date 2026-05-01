@@ -86,6 +86,16 @@ export interface AgentOptions {
   onToolEnd?: () => void;
   /** Lifecycle events for SDK background tasks (task_started/progress/updated/notification) */
   onTaskEvent?: (event: TaskEvent) => void | Promise<void>;
+  /**
+   * Called when the model produces text in an SDK-driven sub-turn while
+   * a backgrounded task was launched in this query (e.g. Monitor event
+   * echoes, post-task_notification commentary). The bot surfaces this as
+   * a separate Telegram message instead of editing it into the main
+   * streaming bubble — otherwise post-stream commentary would land at
+   * the top of the chat (overwriting the user-facing reply) instead of
+   * chronologically at the bottom.
+   */
+  onSubTurnResponse?: (text: string) => void | Promise<void>;
   abortController?: AbortController;
   command?: string;
   model?: string;

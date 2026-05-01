@@ -226,6 +226,18 @@ Use it when the user asks to transcribe, download, or extract media from a URL �
 For voice notes sent directly in chat, the user should use /transcribe instead.
 The user also has an /extract Telegram command for direct use.`;
 
+const MONITOR_RESPONSE_INSTRUCTIONS = `
+
+Monitor Event Responses:
+When you receive a <task-notification> that contains an <event> tag (i.e. a Monitor tool's event), respond with EXACTLY one line:
+
+📡 <event-content>
+
+Where <event-content> is the verbatim text from the <event> tag — no quotes, no commentary, no surrounding text. This is the only content of your response for that turn. The bot surfaces this single line as a separate Telegram message so the user can see each monitor event.
+
+This rule applies ONLY to monitor event notifications. Task completion notifications (the ones with <status>) are handled by the bot — for those, respond as you normally would (briefly acknowledge or stay silent).`;
+
+
 const REASONING_SUMMARY_INSTRUCTIONS = `
 
 Reasoning Summary (required when enabled):
@@ -241,7 +253,7 @@ const TOOL_PROMPTS = [
   config.EXTRACT_ENABLED ? EXTRACT_TOOL_PROMPT : '',
 ].join('');
 
-const SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}${TOOL_PROMPTS}${config.CLAUDE_REASONING_SUMMARY ? REASONING_SUMMARY_INSTRUCTIONS : ''}`;
+const SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}${TOOL_PROMPTS}${MONITOR_RESPONSE_INSTRUCTIONS}${config.CLAUDE_REASONING_SUMMARY ? REASONING_SUMMARY_INSTRUCTIONS : ''}`;
 
 /**
  * Strip the "Reasoning Summary" section from the end of a response
@@ -306,13 +318,21 @@ export async function sendToAgent(
   message: string,
   options: AgentOptions = {}
 ): Promise<AgentResponse> {
-  const { onProgress, onToolStart, onToolEnd, onTaskEvent, abortController, command, model, images } = options;
+  const { onProgress, onToolStart, onToolEnd, onTaskEvent, onSubTurnResponse, abortController, command, model, images } = options;
 
   async function emitTaskEvent(event: TaskEvent): Promise<void> {
     try {
       await onTaskEvent?.(event);
     } catch (err) {
       console.error('[Claude] onTaskEvent handler threw:', err);
+    }
+  }
+
+  async function emitSubTurnResponse(text: string): Promise<void> {
+    try {
+      await onSubTurnResponse?.(text);
+    } catch (err) {
+      console.error('[Claude] onSubTurnResponse handler threw:', err);
     }
   }
 
@@ -535,6 +555,26 @@ export async function sendToAgent(
     // so the matching task_started event can be marked as backgrounded.
     // (task_updated.is_backgrounded only fires on transitions, not initial state.)
     const backgroundedToolUseIds = new Set<string>();
+    // Monitor tool calls — same wire shape as other backgrounded tasks but
+    // we want to render their lifecycle as "📡 Monitor event/armed/ended"
+    // instead of the generic "✅ Background task" wording.
+    const monitorToolUseIds = new Set<string>();
+
+    // Per-turn state for surfacing SDK-driven sub-turns as their own
+    // Telegram messages:
+    //   - The first SDK init corresponds to the user's actual message —
+    //     this is the main turn that owns the streaming bubble.
+    //   - Subsequent inits are SDK-driven sub-turns: monitor event
+    //     deliveries, post-task_notification commentary, etc.
+    //   - When the query has launched a backgrounded task, every sub-turn's
+    //     text response gets posted as its own ctx.reply rather than
+    //     edited into the streaming bubble. Otherwise post-stream
+    //     commentary would land at the top of the chat (overwriting the
+    //     user-facing reply) instead of chronologically at the bottom.
+    let initCount = 0;
+    let hadBackgroundedTask = false;
+    let inSubTurn = false;
+    let subTurnBuffer = '';
 
     // Process response messages
     for await (const responseMessage of response) {
@@ -556,8 +596,18 @@ export async function sendToAgent(
         for (const block of responseMessage.message.content) {
           logAt('trace', '[Claude] Block type:', block.type);
           if (block.type === 'text') {
-            fullText += block.text;
-            onProgress?.(fullText);
+            // Sub-turns (monitor events, post-completion commentary):
+            // buffer the model's text and post it as its own chat message
+            // at result-time instead of editing it into the main streaming
+            // bubble (which would visually overwrite the user-facing reply
+            // and surface the new text at the top of the chat instead of
+            // chronologically at the bottom).
+            if (inSubTurn) {
+              subTurnBuffer += block.text;
+            } else {
+              fullText += block.text;
+              onProgress?.(fullText);
+            }
           } else if (block.type === 'tool_use') {
             const toolInput = 'input' in block ? block.input as Record<string, unknown> : {};
             const inputSummary = toolInput.command
@@ -571,9 +621,13 @@ export async function sendToAgent(
             toolsUsed.push(block.name);
             // Remember tool_use_ids launched as background tasks so we can
             // stamp the matching task_started event with isBackgrounded:true.
-            const isBackgroundedToolCall = toolInput.run_in_background === true;
+            // Monitor is inherently a streaming subscription (model isn't
+            // blocked on it) so treat it as backgrounded too.
+            const isMonitorCall = block.name === 'Monitor';
+            const isBackgroundedToolCall = toolInput.run_in_background === true || isMonitorCall;
             if (isBackgroundedToolCall && 'id' in block && typeof block.id === 'string') {
               backgroundedToolUseIds.add(block.id);
+              if (isMonitorCall) monitorToolUseIds.add(block.id);
               logAt('verbose', `[Claude] BACKGROUND TASK LAUNCH: tool=${block.name} tool_use_id=${block.id}`);
             }
             // Special logging for Task tool (subagents) - always log at basic level
@@ -606,6 +660,16 @@ export async function sendToAgent(
             sessionId: sysMsg.session_id,
           };
           logAt('basic', `[Claude] SESSION INIT: model=${sysMsg.model}, session=${sysMsg.session_id}`);
+
+          // Detect SDK-driven sub-turns. The first init in a query is the
+          // user's own turn (owns the streaming bubble). Subsequent inits
+          // are sub-turns (monitor events, post-completion commentary).
+          // We only redirect sub-turn text to a fresh ctx.reply when this
+          // query actually launched a backgrounded task — otherwise normal
+          // foreground subagent inits would be wrongly suppressed.
+          initCount++;
+          inSubTurn = initCount > 1 && hadBackgroundedTask;
+          subTurnBuffer = '';
         } else if (responseMessage.subtype === 'status') {
           const statusMsg = responseMessage as SDKStatusMessage;
           if (statusMsg.status === 'compacting') {
@@ -614,13 +678,19 @@ export async function sendToAgent(
         } else if (responseMessage.subtype === 'task_started') {
           const m = responseMessage as SDKTaskStartedMessage;
           const isBackgrounded = m.tool_use_id ? backgroundedToolUseIds.has(m.tool_use_id) : false;
-          logAt('verbose', `[Claude] TASK STARTED: ${m.task_id} — ${m.description} backgrounded=${isBackgrounded}`);
+          const isMonitor = m.tool_use_id ? monitorToolUseIds.has(m.tool_use_id) : false;
+          // Override task_type with 'monitor_mcp' for Monitor tool calls.
+          // The SDK's actual task_type value isn't part of the public type
+          // contract, so we tag based on the launching tool name instead.
+          const taskType = isMonitor ? 'monitor_mcp' : m.task_type;
+          if (isBackgrounded) hadBackgroundedTask = true;
+          logAt('verbose', `[Claude] TASK STARTED: ${m.task_id} — ${m.description} backgrounded=${isBackgrounded} taskType=${taskType ?? '?'}`);
           await emitTaskEvent({
             type: 'started',
             taskId: m.task_id,
             description: m.description,
             toolUseId: m.tool_use_id,
-            taskType: m.task_type,
+            taskType,
             workflowName: m.workflow_name,
             skipTranscript: m.skip_transcript,
             isBackgrounded,
@@ -685,6 +755,17 @@ export async function sendToAgent(
         logAt('basic', `[Claude] Query completed: ${getTimingReport(timer)}`);
         logAt('verbose', '[Claude] Result:', JSON.stringify(responseMessage, null, 2).substring(0, 500));
         gotResult = true;
+
+        // Flush any sub-turn text accumulated during this turn as its own
+        // chat message (monitor events, post-completion commentary, etc.).
+        if (inSubTurn) {
+          const subTurnText = subTurnBuffer.trim();
+          if (subTurnText) {
+            await emitSubTurnResponse(subTurnText);
+          }
+          inSubTurn = false;
+          subTurnBuffer = '';
+        }
 
         // Extract usage data from result
         const resultMsg = responseMessage as SDKResultMessage;
