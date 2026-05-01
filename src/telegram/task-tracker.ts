@@ -48,6 +48,10 @@ class TaskTracker {
 
     switch (event.type) {
       case 'started': {
+        // Monitors are inherently long-running streaming subscriptions —
+        // treat them as backgrounded even if the launching tool didn't set
+        // run_in_background:true.
+        const isMonitor = event.taskType === 'monitor_mcp';
         const state: TaskState = {
           id: event.taskId,
           description: event.description,
@@ -55,7 +59,7 @@ class TaskTracker {
           workflowName: event.workflowName,
           toolUseId: event.toolUseId,
           status: 'running',
-          isBackgrounded: event.isBackgrounded ?? false,
+          isBackgrounded: event.isBackgrounded ?? isMonitor,
           skipTranscript: event.skipTranscript ?? false,
           startedAt: Date.now(),
         };
@@ -157,6 +161,22 @@ class TaskTracker {
 
   getBackgroundedCount(sessionKey: string): number {
     return this.getBackgroundedTasks(sessionKey).length;
+  }
+
+  /**
+   * True when at least one Monitor task is currently running. Used to detect
+   * SDK sub-turns that are triggered by monitor events so the bot can surface
+   * the model's echoed event line as its own Telegram message.
+   */
+  hasActiveMonitor(sessionKey: string): boolean {
+    const tasks = this.sessionTasks.get(sessionKey);
+    if (!tasks) return false;
+    for (const task of tasks.values()) {
+      if (task.taskType === 'monitor_mcp' && (task.status === 'running' || task.status === 'pending')) {
+        return true;
+      }
+    }
+    return false;
   }
 
   clear(sessionKey: string): void {
