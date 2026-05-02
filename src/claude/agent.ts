@@ -550,7 +550,9 @@ export async function sendToAgent(
         preset: 'claude_code' as const,
         append: SYSTEM_PROMPT,
       },
-      settingSources: ['project', 'user'] as SettingSource[],
+      settingSources: (config.CLAUDE_SDK_LOAD_USER_SETTINGS
+        ? ['project', 'user']
+        : ['project']) as SettingSource[],
       model: effectiveModel,
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       resume: existingSessionId,
