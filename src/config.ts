@@ -34,6 +34,14 @@ const envSchema = z.object({
     .string()
     .default('false')
     .transform((val) => val.toLowerCase() === 'true'),
+  // Load user-level Claude settings (~/.claude/settings.json: plugins, hooks, MCP servers)
+  // into the bot's SDK subprocess. Default false so the bot runs in an isolated env;
+  // user-level plugins/MCP servers can otherwise inflate tool counts and trigger the
+  // SDK's tool-deferral mechanism, breaking proactive MCP tool calls (e.g. auto-topic).
+  CLAUDE_SDK_LOAD_USER_SETTINGS: z
+    .string()
+    .default('false')
+    .transform((val) => val.toLowerCase() === 'true'),
   CLAUDE_REASONING_SUMMARY: z
     .string()
     .default('true')
