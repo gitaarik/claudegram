@@ -57,6 +57,7 @@ import {
 import { handleMessage } from './handlers/message.handler.js';
 import { handleVoice } from './handlers/voice.handler.js';
 import { handlePhoto, handleImageDocument } from './handlers/photo.handler.js';
+import { createBatchMiddleware } from './middleware/message-batcher.js';
 
 // Resolve sequentialize constraint: same-chat updates are ordered,
 // but /cancel is registered BEFORE this middleware so it bypasses it.
@@ -151,6 +152,12 @@ export async function createBot(): Promise<Bot> {
   bot.command('cancel', handleCancel);
   bot.command('softreset', handleReset);
   bot.command('ping', handlePing);
+
+  // Batch consecutive text messages BEFORE sequentialize.
+  // When Telegram splits a long paste into multiple messages, this combines
+  // them into a single prompt. Must run before sequentialize because that
+  // middleware serializes same-session updates (preventing concurrent batching).
+  bot.use(createBatchMiddleware());
 
   // Sequentialize: same-chat updates are processed in order.
   // This runs AFTER /cancel so cancel bypasses it.
