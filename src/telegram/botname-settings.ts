@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { z } from 'zod';
 
 const botnameSettingsSchema = z.object({
@@ -67,7 +68,7 @@ function saveSettings(): void {
   }
 
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ settings }, null, 2), { mode: 0o600 });
+    atomicWriteFileSync(SETTINGS_FILE, JSON.stringify({ settings }, null, 2), { mode: 0o600 });
   } catch (error) {
     console.error('[BotName] Failed to save settings:', error);
   }
