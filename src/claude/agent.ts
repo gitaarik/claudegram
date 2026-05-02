@@ -34,6 +34,7 @@ import {
 import { userPreferences } from '../providers/user-preferences.js';
 import { BoundedMap } from '../utils/bounded-map.js';
 import { parseSessionKey } from '../utils/session-key.js';
+import { resolveBundledClaudeBin } from '../utils/resolve-claude-bin.js';
 
 import type { AgentUsage, AgentResponse, AgentOptions, LoopOptions, ImageAttachment, TaskEvent } from '../providers/types.js';
 import { taskTracker } from '../telegram/task-tracker.js';
@@ -554,7 +555,13 @@ export async function sendToAgent(
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       resume: existingSessionId,
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
-      ...(config.CLAUDE_USE_BUNDLED_EXECUTABLE ? {} : { pathToClaudeCodeExecutable: config.CLAUDE_EXECUTABLE_PATH }),
+      ...(() => {
+        if (!config.CLAUDE_USE_BUNDLED_EXECUTABLE) {
+          return { pathToClaudeCodeExecutable: config.CLAUDE_EXECUTABLE_PATH };
+        }
+        const bundled = resolveBundledClaudeBin();
+        return bundled ? { pathToClaudeCodeExecutable: bundled } : {};
+      })(),
       includePartialMessages: config.CLAUDE_SDK_INCLUDE_PARTIAL || getLogLevel() === 'trace',
       hooks,
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
