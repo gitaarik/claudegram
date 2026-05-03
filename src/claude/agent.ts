@@ -237,14 +237,19 @@ When you generate a file and the user would benefit from receiving it, proactive
 
 const SET_TOPIC_TOOL_PROMPT = `
 
-Auto-Topic Tool:
-You have a claudegram_set_topic MCP tool that updates the conversation topic shown in the Telegram bot display name.
-Call it PROACTIVELY when the user starts working on a new topic or the focus shifts significantly.
-Keep topics extremely short (1-4 words) — the bot name format is "topic — project — Name" with a 64-char limit.
-Good examples: "auth bug", "CI fix", "dark mode", "API docs", "test suite"
-Bad examples: "Working on authentication bug in login module" (too long)
-Do NOT call it for every message — only when the work topic meaningfully changes.
-Pass an empty string to clear the topic when the conversation becomes general.`;
+Auto-Topic Tool (IMPORTANT — call this often):
+You MUST use the claudegram_set_topic MCP tool to keep the bot's display name in sync with what the user is working on. The bot name renders as "topic — project — Name" with a 64-char limit.
+
+Call claudegram_set_topic in these situations:
+1. ON YOUR VERY FIRST RESPONSE of any conversation — read the user's first message and call the tool with a 1-4 word topic BEFORE writing your reply text.
+2. WHENEVER THE USER'S FOCUS SHIFTS to a meaningfully different task (different file/feature/bug/question category). Call the tool, THEN respond.
+3. Pass an empty string ("") to clear when the conversation becomes general or idle.
+
+When NOT to call: minor follow-up on the same topic; clarifying questions about ongoing work; the next message in a continuous task.
+
+Format: 1-4 lowercase words. Examples: "auth bug", "CI fix", "dark mode", "API docs", "watchdog tuning", "PR planning", "reading code".
+
+When uncertain whether the topic shifted, LEAN TOWARD CALLING. A slightly-too-frequent topic update is fine; a stale topic is bad UX. The user is relying on the bot name to know what you're working on.`;
 
 const MONITOR_RESPONSE_INSTRUCTIONS = `
 
