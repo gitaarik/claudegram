@@ -23,7 +23,7 @@ import type { Context } from 'grammy';
 import { config } from '../config.js';
 import { AgentWatchdog } from './agent-watchdog.js';
 import { createClaudegramMcpServer } from './mcp-tools.js';
-import { getSessionTopic } from '../bot/handlers/command.handler.js';
+import { getSessionTopic, getMsSinceTopicSet } from '../bot/handlers/command.handler.js';
 import { isBotNameEnabled } from '../telegram/botname-settings.js';
 import {
   createAgentTimer,
@@ -505,24 +505,26 @@ export async function sendToAgent(
       : {};
 
     // Auto-topic reminder: inject a per-turn nudge so the model considers
-    // updating the topic on every user message. Without this, even a strong
-    // system-prompt instruction is too easy for the model to skip.
+    // updating the topic on every user message. Skip when the topic was just
+    // set (within the cooldown window) to avoid wasted tokens on follow-ups.
+    const TOPIC_REMINDER_COOLDOWN_MS = 90_000;
     const autoTopicHook: Partial<Record<HookEvent, HookCallbackMatcher[]>> =
       config.DYNAMIC_BOT_NAME && isBotNameEnabled(sessionKey)
         ? {
           UserPromptSubmit: [{
             hooks: [async () => {
+              const sinceMs = getMsSinceTopicSet(sessionKey);
+              if (sinceMs !== undefined && sinceMs < TOPIC_REMINDER_COOLDOWN_MS) {
+                return { continue: true };
+              }
               const currentTopic = getSessionTopic(sessionKey);
-              const topicLabel = currentTopic ? `"${currentTopic}"` : '(none set)';
+              const topicLabel = currentTopic ? `"${currentTopic}"` : 'none';
               return {
                 continue: true,
                 hookSpecificOutput: {
                   hookEventName: 'UserPromptSubmit' as const,
                   additionalContext:
-                    `[Topic reminder] Current bot topic: ${topicLabel}. ` +
-                    `If this user message represents a meaningfully different focus than the current topic ` +
-                    `(or no topic is set yet), call claudegram_set_topic with a 1-4 word topic BEFORE writing your reply. ` +
-                    `Lean toward calling when uncertain — a stale topic is bad UX.`,
+                    `[Topic: ${topicLabel}] If user shifted focus, call claudegram_set_topic before replying.`,
                 },
               };
             }],
