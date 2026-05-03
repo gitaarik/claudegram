@@ -71,6 +71,9 @@ function buildFeatureDisabledMessage(feature: string): string {
 
 // Per-session topic (ephemeral — not persisted across restarts)
 const sessionTopics: Map<string, string> = new Map();
+// Per-session timestamp of last setSessionTopic call. Used by the auto-topic
+// reminder hook to skip the per-turn nudge when the topic was just updated.
+const lastTopicSetAt: Map<string, number> = new Map();
 
 /** Build the full bot display name from base name, project, and topic. */
 function buildBotDisplayName(sessionKey: string): string {
@@ -112,12 +115,19 @@ export function setSessionTopic(sessionKey: string, topic: string): string {
   } else {
     sessionTopics.delete(sessionKey);
   }
+  lastTopicSetAt.set(sessionKey, Date.now());
   return buildBotDisplayName(sessionKey);
 }
 
 /** Get the current session topic. */
 export function getSessionTopic(sessionKey: string): string | undefined {
   return sessionTopics.get(sessionKey);
+}
+
+/** Milliseconds since the last setSessionTopic call (or undefined if never). */
+export function getMsSinceTopicSet(sessionKey: string): number | undefined {
+  const at = lastTopicSetAt.get(sessionKey);
+  return at !== undefined ? Date.now() - at : undefined;
 }
 
 export async function handleTopic(ctx: Context): Promise<void> {
