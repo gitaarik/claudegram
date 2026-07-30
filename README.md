@@ -1,3 +1,11 @@
+> ## 📦 This project is now **TeleCoder**
+>
+> Development continues at **[github.com/gitaarik/telecoder](https://github.com/gitaarik/telecoder)** —
+> same project, new name, still actively maintained. Website: **[telecoder.dev](https://telecoder.dev)**
+>
+> This repository holds the earlier history of that work and stays up for reference.
+> New commits, issues, and releases happen in the TeleCoder repo.
+
 <div align="center">
 
 # Claudegram
@@ -21,11 +29,13 @@
 
 ---
 
-> **Active fork** maintained by [@gitaarik](https://github.com/gitaarik) since
-> February 2026. Substantially extended from the [original by @NachoSEO](https://github.com/NachoSEO/claudegram)
-> with auto-topic, multi-instance launcher, /effort + /tasks commands,
-> background task lifecycle, Skills + TodoWrite support, agent watchdog,
-> plan-mode surfacing, and more. See [Credits](#credits) for full attribution.
+> Fork maintained by [@gitaarik](https://github.com/gitaarik) since February 2026,
+> and renamed to [TeleCoder](https://github.com/gitaarik/telecoder) in July 2026 once it
+> had grown into its own project. Substantially extended from the
+> [original by @NachoSEO](https://github.com/NachoSEO/claudegram) with auto-topic,
+> multi-instance launcher, /effort + /tasks commands, background task lifecycle,
+> Skills + TodoWrite support, agent watchdog, plan-mode surfacing, and more.
+> See [Credits](#credits) for full attribution.
 
 ---
 
